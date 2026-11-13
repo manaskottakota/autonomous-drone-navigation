@@ -111,3 +111,16 @@ def test_sensor_policy_history_is_normalized_and_reset_each_episode():
         assert np.all(reset_obs[-5:] == 0.0)
     finally:
         env.close()
+
+
+def test_random_obstacle_scenes_are_reproducible_from_seed():
+    env = ObstacleNavigationAviary(scenario="random")
+    try:
+        env.reset(seed=441)
+        first = (env.start_position.copy(), env.goal.copy(), env.obstacles)
+        env.reset(seed=441)
+        np.testing.assert_array_equal(env.start_position, first[0])
+        np.testing.assert_array_equal(env.goal, first[1])
+        assert env.obstacles == first[2]
+    finally:
+        env.close()

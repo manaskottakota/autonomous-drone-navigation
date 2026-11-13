@@ -30,6 +30,10 @@ def main() -> None:
         env.close()
         return
     base_env = env
+    # SB3 seeds its policy RNG, but Gymnasium's own np_random would otherwise
+    # be entropy-seeded on its first reset, making scene generation irreproducible.
+    base_env.reset(seed=args.seed)
+    base_env.close()
     env = Monitor(base_env)
     if args.resume:
         model = PPO.load(args.resume, env=env, device="cpu")
