@@ -21,9 +21,12 @@ def main() -> None:
     parser.add_argument("--curriculum", action="store_true", help="Progress from 1 to 2 to 4 obstacles")
     parser.add_argument("--gamma", type=float, default=0.99, help="PPO discount factor")
     parser.add_argument("--action-history", action="store_true", help="Include previous command and sensor-derived progress")
+    parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
+    parser.add_argument("--speed-curriculum", action="store_true", help="Increase speed from 0.45 to 0.90 m/s while increasing obstacle count")
     parser.add_argument("--check-env", action="store_true")
     args = parser.parse_args()
-    env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history)
+    env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history,
+                                   max_speed=args.speed_limit)
     if args.check_env:
         check_env(env, warn=True)
         print("Obstacle environment API check passed")
@@ -44,7 +47,20 @@ def main() -> None:
         )
     output = args.output or Path(f"autonomous_navigation/models/obstacle_{args.scenario}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    if args.curriculum and args.scenario == "random":
+    if args.speed_curriculum and args.scenario == "random":
+        phases = ((0.45, 1, 0.20), (0.60, 2, 0.20), (0.75, 3, 0.30), (0.90, 4, 0.30))
+        completed = 0
+        for phase, (speed, max_obstacles, fraction) in enumerate(phases, start=1):
+            phase_steps = args.timesteps - completed if phase == len(phases) else round(args.timesteps * fraction)
+            if phase_steps <= 0:
+                continue
+            base_env.set_speed_limit(speed)
+            base_env.set_obstacle_count_range(1, max_obstacles)
+            print(f"Speed curriculum phase {phase}: {speed:.2f} m/s, 1-{max_obstacles} obstacles, {phase_steps} steps")
+            model.learn(total_timesteps=phase_steps, reset_num_timesteps=args.resume is None and completed == 0)
+            completed += phase_steps
+            model.save(f"{output}_speed_stage_{phase}")
+    elif args.curriculum and args.scenario == "random":
         phases = ((1, 0.25), (2, 0.25), (4, 0.50))
         completed = 0
         for phase, (max_obstacles, fraction) in enumerate(phases, start=1):

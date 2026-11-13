@@ -16,9 +16,11 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=10000)
     parser.add_argument("--hold-seconds", type=float, default=4.0)
     parser.add_argument("--action-history", action="store_true", help="Use model trained with recent command/progress features")
+    parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
     args = parser.parse_args()
     model = PPO.load(args.model, device="cpu")
-    env = ObstacleNavigationAviary(render_mode="human", scenario=args.scenario, action_history=args.action_history)
+    env = ObstacleNavigationAviary(render_mode="human", scenario=args.scenario, action_history=args.action_history,
+                                   max_speed=args.speed_limit)
     try:
         obs, _ = env.reset(seed=args.seed)
         done, info = False, {}

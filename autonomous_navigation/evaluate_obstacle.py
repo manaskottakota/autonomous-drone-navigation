@@ -19,11 +19,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=10000)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--action-history", action="store_true", help="Use model trained with recent command/progress features")
+    parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
     args = parser.parse_args()
     if args.episodes <= 0:
         parser.error("--episodes must be positive")
     model = PPO.load(args.model, device="cpu")
-    env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history)
+    env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history, max_speed=args.speed_limit)
     trials = []
     try:
         for index in range(args.episodes):
@@ -64,6 +65,7 @@ def main() -> None:
                 "crashed": bool(info["crashed"]),
                 "final_distance_m": float(info["distance"]),
                 "time_s": steps * env.dt,
+                "average_speed_mps": path_length / max(steps * env.dt, 1e-8),
                 "path_efficiency": net_displacement / max(path_length, 1e-8),
                 "failure_category": failure_category,
                 "minimum_goal_distance_m": float(min(distance_history)),
@@ -78,6 +80,7 @@ def main() -> None:
             "collision_rate": float(np.mean([trial["collision"] for trial in trials])),
             "crash_rate": float(np.mean([trial["crashed"] for trial in trials])),
             "mean_completion_time_s": float(np.mean([trial["time_s"] for trial in successes])) if successes else None,
+            "mean_average_speed_mps": float(np.mean([trial["average_speed_mps"] for trial in successes])) if successes else None,
             "mean_final_distance_m": float(np.mean([trial["final_distance_m"] for trial in trials])),
             "mean_path_efficiency": float(np.mean([trial["path_efficiency"] for trial in trials])),
             "failure_categories": {

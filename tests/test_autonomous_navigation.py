@@ -124,3 +124,27 @@ def test_random_obstacle_scenes_are_reproducible_from_seed():
         assert env.obstacles == first[2]
     finally:
         env.close()
+
+
+def test_configurable_horizontal_speed_limit():
+    env = ObstacleNavigationAviary(scenario="wall", max_speed=0.7, max_episode_steps=2)
+    try:
+        env.reset(seed=10)
+        initial_target = env.position_target.copy()
+        env.step(np.array([0.0, 1.0, 0.0], dtype=np.float32))
+        np.testing.assert_allclose(env.position_target[1] - initial_target[1], 0.7 * env.dt)
+        env.set_speed_limit(0.55)
+        assert env.max_speed == 0.55
+    finally:
+        env.close()
+
+
+def test_speed_limit_rejects_unsafe_or_nonfinite_values():
+    env = ObstacleNavigationAviary(scenario="wall")
+    for invalid in (0.0, -0.1, 1.21, float("nan"), float("inf")):
+        try:
+            env.set_speed_limit(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"invalid speed limit {invalid} was accepted")

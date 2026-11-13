@@ -47,6 +47,7 @@ class ObstacleNavigationAviary(gym.Env):
         max_episode_steps: int = 200,
         obstacle_count_range: tuple[int, int] = (1, 4),
         action_history: bool = False,
+        max_speed: float = 0.45,
     ):
         super().__init__()
         if render_mode not in (None, "human"):
@@ -61,7 +62,7 @@ class ObstacleNavigationAviary(gym.Env):
         self.control_hz = 48
         self.action_repeat = 4
         self.dt = self.action_repeat / self.control_hz
-        self.max_speed = 0.45
+        self.set_speed_limit(max_speed)
         self.success_radius = 0.18
         self.action_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
         self.base_observation_size = 6 + self.LIDAR_RAYS
@@ -134,6 +135,12 @@ class ObstacleNavigationAviary(gym.Env):
         if not 1 <= minimum <= maximum <= 4:
             raise ValueError("obstacle count range must satisfy 1 <= min <= max <= 4")
         self.min_obstacles, self.max_obstacles = minimum, maximum
+
+    def set_speed_limit(self, speed_mps: float) -> None:
+        """Set the horizontal high-level command speed in metres per second."""
+        if not np.isfinite(speed_mps) or not 0.1 <= speed_mps <= 1.2:
+            raise ValueError("speed limit must be finite and between 0.1 and 1.2 m/s")
+        self.max_speed = float(speed_mps)
 
     def _create_obstacles(self) -> None:
         client = self.aviary.getPyBulletClient()
@@ -288,6 +295,12 @@ class ObstacleNavigationAviary(gym.Env):
         self.position_target = np.clip(self.position_target, [-2, -2, 0.3], [2, 2, 1.8])
         state = None
         collision = False
+        client = self.aviary.getPyBulletClient()
+        if self.render_mode == "human":
+            # PyBullet's GUI otherwise redraws every 240 Hz physics update.
+            # The policy and LiDAR only update at 12 Hz, so render once after
+            # each four-step PID batch instead.
+            p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0, physicsClientId=client)
         for _ in range(self.action_repeat):
             prior_position = self.aviary._getDroneStateVector(0)[:3].copy()
             motor_action, _, _ = self.controller.computeControlFromState(
@@ -333,7 +346,7 @@ class ObstacleNavigationAviary(gym.Env):
         terminated = bool(success or crashed)
         truncated = self.steps >= self.max_episode_steps
         if self.render_mode == "human":
-            self.aviary.render()
+            p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1, physicsClientId=client)
         return self._observation(state, ranges), float(reward), terminated, truncated, {
             "distance": distance, "is_success": success, "collision": collision,
             "crashed": crashed, "lidar_min_m": float(np.min(ranges) * self.LIDAR_RANGE),

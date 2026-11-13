@@ -42,6 +42,7 @@ def rollout(env, model, seed: int, waypoints: list[np.ndarray] | None = None, de
         "collision": bool(info["collision"]),
         "final_distance_m": float(info["distance"]),
         "time_s": steps * env.dt,
+        "average_speed_mps": path_length / max(steps * env.dt, 1e-8),
         "path_efficiency": float(np.linalg.norm(previous - start) / max(path_length, 1e-8)),
     }
 
@@ -52,6 +53,7 @@ def summarize(trials: list[dict]) -> dict[str, float]:
         "success_rate": float(np.mean([trial["success"] for trial in trials])),
         "collision_rate": float(np.mean([trial["collision"] for trial in trials])),
         "mean_completion_time_s": float(np.mean([trial["time_s"] for trial in successful])) if successful else float("nan"),
+        "mean_average_speed_mps": float(np.mean([trial["average_speed_mps"] for trial in successful])) if successful else float("nan"),
         "mean_final_distance_m": float(np.mean([trial["final_distance_m"] for trial in trials])),
         "mean_path_efficiency": float(np.mean([trial["path_efficiency"] for trial in trials])),
     }
@@ -65,11 +67,12 @@ def main() -> None:
     parser.add_argument("--training-seed", type=int, default=17)
     parser.add_argument("--output", type=Path, default=Path("autonomous_navigation/results/obstacle_ppo_vs_astar.json"))
     parser.add_argument("--action-history", action="store_true", help="Use model trained with recent command/progress features")
+    parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
     args = parser.parse_args()
     if args.episodes <= 0:
         parser.error("--episodes must be positive")
     model = PPO.load(args.model, device="cpu")
-    env = ObstacleNavigationAviary(scenario="random", action_history=args.action_history)
+    env = ObstacleNavigationAviary(scenario="random", action_history=args.action_history, max_speed=args.speed_limit)
     ppo_trials, astar_trials, no_route = [], [], 0
     try:
         for index in range(args.episodes):
@@ -82,7 +85,8 @@ def main() -> None:
             if waypoints is None:
                 no_route += 1
                 astar_trials.append({"success": False, "collision": False, "final_distance_m": float(np.linalg.norm(goal-start)),
-                                     "time_s": env.max_episode_steps * env.dt, "path_efficiency": 0.0})
+                                     "time_s": env.max_episode_steps * env.dt, "average_speed_mps": 0.0,
+                                     "path_efficiency": 0.0})
             else:
                 astar_trials.append(rollout(env, model=None, seed=seed, waypoints=waypoints))
             if (index + 1) % 10 == 0:
