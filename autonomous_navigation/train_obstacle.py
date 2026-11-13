@@ -70,6 +70,7 @@ def main() -> None:
     if args.resume:
         model = PPO.load(args.resume, env=env, device="cpu")
         model.set_random_seed(args.seed)
+        model.gamma = args.gamma
     else:
         model = PPO(
             "MlpPolicy", env, verbose=1, seed=args.seed, n_steps=512, batch_size=64,
