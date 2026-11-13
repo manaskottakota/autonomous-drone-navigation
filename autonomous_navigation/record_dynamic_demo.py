@@ -34,7 +34,8 @@ def _draw_line(image: np.ndarray, start: tuple[int, int] | None, end: tuple[int,
     image[ys[visible], xs[visible]] = color
 
 
-def _capture(env: ObstacleNavigationAviary, width: int, height: int) -> np.ndarray:
+def _capture(env: ObstacleNavigationAviary, width: int, height: int,
+             trajectory: list[np.ndarray], initial_goal_distance: float) -> np.ndarray:
     client = env.aviary.getPyBulletClient()
     state = env.aviary._getDroneStateVector(0)
     view_values = p.computeViewMatrix(
@@ -63,6 +64,21 @@ def _capture(env: ObstacleNavigationAviary, width: int, height: int) -> np.ndarr
         end_px = _project(endpoint, view, projection, width, height)
         color = (255, 70, 45) if measured_range < env.LIDAR_RANGE - 0.03 else (55, 195, 255)
         _draw_line(image, start_px, end_px, color)
+    # Overlay the route actually flown (not a planned path), goal reticle, and
+    # a compact distance-progress bar for a readable course recording.
+    projected = [_project(point, view, projection, width, height) for point in trajectory]
+    for first, second in zip(projected, projected[1:]):
+        _draw_line(image, first, second, (45, 245, 210))
+    goal_px = _project(env.goal, view, projection, width, height)
+    if goal_px is not None:
+        gx, gy = goal_px
+        _draw_line(image, (gx - 7, gy), (gx + 7, gy), (80, 255, 90))
+        _draw_line(image, (gx, gy - 7), (gx, gy + 7), (80, 255, 90))
+    current_distance = float(np.linalg.norm(env.goal - state[:3]))
+    progress = np.clip(1.0 - current_distance / max(initial_goal_distance, 1e-6), 0.0, 1.0)
+    left, right, top, bottom = 24, width - 24, 18, 29
+    image[top:bottom, left:right] = (40, 45, 52)
+    image[top + 2:bottom - 2, left + 2:left + 2 + int((right - left - 4) * progress)] = (65, 220, 125)
     return image
 
 
@@ -84,7 +100,7 @@ def main() -> None:
         parser.error("ffmpeg is required to encode the recording")
     model = PPO.load(args.model, device="cpu")
     env = ObstacleNavigationAviary(
-        scenario=args.scenario, dynamic_observation=True, action_history=args.action_history,
+        scenario=args.scenario, dynamic_observation=args.scenario != "complex", action_history=args.action_history,
         policy_hz=args.policy_hz, max_speed=args.speed_limit,
     )
     if args.scenario == "complex":
@@ -97,10 +113,12 @@ def main() -> None:
     try:
         obs, _ = env.reset(seed=args.seed)
         previous = env.start_position.copy()
+        trajectory = [previous.copy()]
+        initial_goal_distance = float(np.linalg.norm(env.goal - env.start_position))
         with tempfile.TemporaryDirectory(prefix="dynamic-drone-") as temporary:
             raw_path = Path(temporary) / "frames.rgb"
             with raw_path.open("wb") as raw:
-                raw.write(_capture(env, args.width, args.height).tobytes())
+                raw.write(_capture(env, args.width, args.height, trajectory, initial_goal_distance).tobytes())
                 done, info = False, {}
                 while not done:
                     action, _ = model.predict(obs, deterministic=True)
@@ -108,7 +126,8 @@ def main() -> None:
                     position = env.aviary._getDroneStateVector(0)[:3]
                     path_length += float(np.linalg.norm(position - previous))
                     previous = position.copy()
-                    raw.write(_capture(env, args.width, args.height).tobytes())
+                    trajectory.append(position.copy())
+                    raw.write(_capture(env, args.width, args.height, trajectory, initial_goal_distance).tobytes())
                     frame_count += 1
                     done = terminated or truncated
             subprocess.run([
