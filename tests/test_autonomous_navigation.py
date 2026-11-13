@@ -321,5 +321,10 @@ def test_cylinder_and_sphere_contact_are_detected_by_swept_collision():
             env.obstacles = (obstacle,)
             assert env._swept_collision(np.array([-0.4, 0.0, 0.7]),
                                         np.array([0.4, 0.0, 0.7]))
+        env.obstacles = (SphereObstacle((0, 0, 0.7), 0.2),)
+        # This diagonal near-miss falls inside the sphere's AABB but outside
+        # its round collision envelope; primitive-aware sweeps must not report it.
+        assert not env._swept_collision(np.array([-0.4, 0.21, 0.91]),
+                                        np.array([0.4, 0.21, 0.91]))
     finally:
         env.close()

@@ -462,7 +462,6 @@ class ObstacleNavigationAviary(gym.Env):
     def _swept_collision(self, start: np.ndarray, end: np.ndarray) -> bool:
         """Catch brief contacts that resolve between PyBullet control frames."""
         padding = 0.08  # approximate horizontal/vertical collision radius of the Crazyflie
-        direction = end - start
         specs = [(part, np.asarray(part.center), np.asarray(part.center))
                  for obstacle in self.obstacles for part in obstacle_parts(obstacle)]
         for index, obstacle in enumerate(self.dynamic_obstacles):
@@ -473,7 +472,27 @@ class ObstacleNavigationAviary(gym.Env):
             # Relative motion catches contacts even when a box crosses the
             # drone between two PyBullet integration frames.
             relative_start = start - center_start
-            direction = (end - center_end) - relative_start
+            relative_end = end - center_end
+            direction = relative_end - relative_start
+            if isinstance(obstacle, SphereObstacle):
+                denominator = float(np.dot(direction, direction))
+                t = 0.0 if denominator < 1e-12 else np.clip(-np.dot(relative_start, direction) / denominator, 0, 1)
+                closest = relative_start + t * direction
+                if np.linalg.norm(closest) <= obstacle.radius + padding:
+                    return True
+                continue
+            if isinstance(obstacle, CylinderObstacle):
+                horizontal = direction[:2]
+                denominator = float(np.dot(horizontal, horizontal))
+                t = 0.0 if denominator < 1e-12 else np.clip(-np.dot(relative_start[:2], horizontal) / denominator, 0, 1)
+                closest_xy = relative_start[:2] + t * horizontal
+                z_min = min(relative_start[2], relative_end[2])
+                z_max = max(relative_start[2], relative_end[2])
+                overlaps_height = (z_max >= -obstacle.height / 2 - padding
+                                   and z_min <= obstacle.height / 2 + padding)
+                if np.linalg.norm(closest_xy) <= obstacle.radius + padding and overlaps_height:
+                    return True
+                continue
             extent = np.asarray(obstacle.half_extents) + padding
             lower, upper = -extent, extent
             near, far = 0.0, 1.0
