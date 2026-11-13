@@ -39,7 +39,7 @@ DYNAMIC_CROSSING_SCENE = {
     "goal": (1.1, 0.0, 0.7),
     "obstacle": DynamicBoxObstacle(
         center=(0.0, -0.55, 0.7), half_extents=(0.20, 0.20, 0.45),
-        velocity=(0.0, 0.22, 0.0),
+        velocity=(0.0, 0.12, 0.0),
         bounds=((0.0, -0.65, 0.7), (0.0, 0.65, 0.7)),
     ),
 }
@@ -81,6 +81,7 @@ class ObstacleNavigationAviary(gym.Env):
         self.scenario = scenario
         self.max_episode_steps = max_episode_steps
         self.set_obstacle_count_range(*obstacle_count_range)
+        self.set_dynamic_speed_range(0.12, 0.30)
         self.action_history = action_history
         self.scenario_dynamic = scenario_dynamic or scenario == "dynamic_random"
         self.dynamic_observation = dynamic_observation
@@ -178,6 +179,13 @@ class ObstacleNavigationAviary(gym.Env):
             raise ValueError("obstacle count range must satisfy 1 <= min <= max <= 4")
         self.min_obstacles, self.max_obstacles = minimum, maximum
 
+    def set_dynamic_speed_range(self, minimum_mps: float, maximum_mps: float) -> None:
+        """Set the randomized obstacle speed range for future episodes."""
+        if (not np.isfinite(minimum_mps) or not np.isfinite(maximum_mps)
+                or minimum_mps < 0.05 or maximum_mps < minimum_mps or maximum_mps > 0.8):
+            raise ValueError("dynamic obstacle speeds must satisfy 0.05 <= min <= max <= 0.8 m/s")
+        self.dynamic_speed_range = (float(minimum_mps), float(maximum_mps))
+
     def set_speed_limit(self, speed_mps: float) -> None:
         """Set the horizontal high-level command speed in metres per second."""
         if not np.isfinite(speed_mps) or not 0.1 <= speed_mps <= 1.2:
@@ -234,6 +242,7 @@ class ObstacleNavigationAviary(gym.Env):
         movers: list[DynamicBoxObstacle] = []
         static: list[BoxObstacle] = []
         direction = goal[:2] - start[:2]
+        direction /= max(np.linalg.norm(direction), 1e-8)
         perpendicular = np.array([-direction[1], direction[0]])
         perpendicular /= max(np.linalg.norm(perpendicular), 1e-8)
         for index, obstacle in enumerate(obstacles):
@@ -242,12 +251,15 @@ class ObstacleNavigationAviary(gym.Env):
                 static.append(obstacle)
                 continue
             center = np.asarray(obstacle.center, dtype=float)
-            speed = float(self.np_random.uniform(0.12, 0.30))
-            velocity = np.array([perpendicular[0] * speed, perpendicular[1] * speed, 0.0])
-            extent = max(0.55, abs(perpendicular[0]) * 0.65 + abs(perpendicular[1]) * 0.65)
+            motion_axis = perpendicular if self.np_random.random() < 0.75 else direction
+            if self.np_random.random() < 0.5:
+                motion_axis = -motion_axis
+            speed = float(self.np_random.uniform(*self.dynamic_speed_range))
+            velocity = np.array([motion_axis[0] * speed, motion_axis[1] * speed, 0.0])
+            extent = max(0.55, abs(motion_axis[0]) * 0.65 + abs(motion_axis[1]) * 0.65)
             lower, upper = center.copy(), center.copy()
-            lower[:2] -= np.abs(perpendicular) * extent
-            upper[:2] += np.abs(perpendicular) * extent
+            lower[:2] -= np.abs(motion_axis) * extent
+            upper[:2] += np.abs(motion_axis) * extent
             movers.append(DynamicBoxObstacle(
                 tuple(center), obstacle.half_extents, tuple(velocity), (tuple(lower), tuple(upper)),
             ))

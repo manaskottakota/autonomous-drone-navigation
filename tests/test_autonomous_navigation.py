@@ -239,3 +239,30 @@ def test_policy_transfer_copies_legacy_inputs_and_zeroes_new_sensor_inputs():
     assert torch.all(transferred["mlp_extractor.policy_net.0.weight"][:, :83] == 2.0)
     assert torch.count_nonzero(transferred["mlp_extractor.policy_net.0.weight"][:, 83:]) == 0
     assert torch.equal(transferred["action_net.bias"], source["action_net.bias"])
+
+
+def test_dynamic_random_samples_crossing_head_on_and_seeded_velocities():
+    env = ObstacleNavigationAviary(scenario="dynamic_random", obstacle_count_range=(1, 1))
+    try:
+        alignments = []
+        for seed in range(40):
+            env.reset(seed=seed)
+            mover = env.dynamic_obstacles[0]
+            direction = env.goal[:2] - env.start_position[:2]
+            direction /= np.linalg.norm(direction)
+            velocity = np.asarray(mover.velocity[:2])
+            speed = float(np.linalg.norm(velocity))
+            assert 0.12 <= speed <= 0.30
+            alignments.append(float(np.dot(velocity / speed, direction)))
+        assert any(abs(value) < 0.3 for value in alignments), "crossing trajectories should be sampled"
+        assert any(value > 0.7 for value in alignments), "same-direction trajectories should be sampled"
+        assert any(value < -0.7 for value in alignments), "head-on trajectories should be sampled"
+
+        env.set_dynamic_speed_range(0.25, 0.35)
+        env.reset(seed=101)
+        first = env.dynamic_obstacles
+        env.reset(seed=101)
+        assert env.dynamic_obstacles == first
+        assert 0.25 <= np.linalg.norm(env.dynamic_obstacles[0].velocity[:2]) <= 0.35
+    finally:
+        env.close()

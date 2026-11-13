@@ -106,20 +106,22 @@ def main() -> None:
         if not args.dynamic_observation:
             parser.error("--dynamic-curriculum requires --dynamic-observation")
         phases = (
-            ("dynamic_wall", 0.45, 1, 0.20),
-            ("dynamic_random", 0.60, 2, 0.25),
-            ("dynamic_random", 0.75, 3, 0.30),
-            ("dynamic_random", 0.90, 4, 0.25),
+            ("dynamic_wall", 0.45, 1, (0.12, 0.12), 0.20),
+            ("dynamic_random", 0.60, 2, (0.12, 0.22), 0.25),
+            ("dynamic_random", 0.75, 3, (0.15, 0.32), 0.30),
+            ("dynamic_random", 0.90, 4, (0.18, 0.40), 0.25),
         )
         completed = 0
-        for phase, (scenario, speed, max_obstacles, fraction) in enumerate(phases, start=1):
+        for phase, (scenario, speed, max_obstacles, moving_speed, fraction) in enumerate(phases, start=1):
             phase_steps = args.timesteps - completed if phase == len(phases) else round(args.timesteps * fraction)
             if phase_steps <= 0:
                 continue
             base_env.scenario = scenario
             base_env.set_speed_limit(speed)
             base_env.set_obstacle_count_range(1, max_obstacles)
-            print(f"Dynamic curriculum phase {phase}: {scenario}, {speed:.2f} m/s, 1-{max_obstacles} boxes, {phase_steps} steps")
+            base_env.set_dynamic_speed_range(*moving_speed)
+            print(f"Dynamic curriculum phase {phase}: {scenario}, {speed:.2f} m/s, 1-{max_obstacles} boxes, "
+                  f"obstacle speed {moving_speed[0]:.2f}-{moving_speed[1]:.2f} m/s, {phase_steps} steps")
             model.learn(total_timesteps=phase_steps, reset_num_timesteps=args.resume is None and completed == 0)
             completed += phase_steps
             model.save(f"{output}_dynamic_stage_{phase}")
