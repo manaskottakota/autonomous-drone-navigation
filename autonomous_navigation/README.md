@@ -55,3 +55,22 @@ training seed, timestep count, and evaluation command with each reported run.
 Evaluation prints success/crash rates, final distance, elapsed time, and path
 efficiency. The current environment has no obstacles; its crash metric counts
 ground contact or leaving the flight bounds.
+
+## LiDAR obstacle avoidance
+
+The separate `ObstacleNavigationAviary` uses 72 simulated 3D PyBullet rays,
+goal-relative position, and velocity as policy observations. Its PPO action is
+an XYZ velocity command converted to a moving target for the DSL PID. The
+observation excludes absolute position and obstacle geometry. A fixed wall
+scene is available for the first training stage; randomized scenes contain one
+to four static boxes.
+
+```sh
+./.venv/bin/python -m autonomous_navigation.train_obstacle --scenario wall --timesteps 100000 --seed 17
+./.venv/bin/python -m autonomous_navigation.evaluate_obstacle autonomous_navigation/models/obstacle_wall.zip --scenario wall --episodes 20 --seed 10000
+./.venv/bin/python -m autonomous_navigation.obstacle_demo --model autonomous_navigation/models/obstacle_wall.zip --scenario wall
+```
+
+For randomized multi-obstacle training and evaluation, use `--scenario random`
+and hold out evaluation seeds from the training seed range. The evaluator saves
+per-trial success, collision, completion time, and path-efficiency results.

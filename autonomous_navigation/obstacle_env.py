@@ -73,6 +73,7 @@ class ObstacleNavigationAviary(gym.Env):
         self.goal = np.zeros(3)
         self.position_target = np.zeros(3)
         self.previous_distance = 0.0
+        self.previous_goal_ray_m = self.LIDAR_RANGE
         self.steps = 0
         self.last_ranges = np.ones(self.LIDAR_RAYS, dtype=np.float32)
         self.debug_ray_ids: list[int] = []
@@ -179,6 +180,14 @@ class ObstacleNavigationAviary(gym.Env):
         velocity = np.clip(state[10:13] / 2.0, -1, 1)
         return np.concatenate((goal_relative, velocity, ranges)).astype(np.float32)
 
+    def _goal_ray_distance(self, state: np.ndarray, ranges: np.ndarray) -> float:
+        """Read the horizontal LiDAR beam most aligned with the relative goal."""
+        relative = self.goal - state[:3]
+        desired_bearing = np.arctan2(relative[1], relative[0])
+        relative_bearing = (desired_bearing - float(state[9]) + np.pi) % (2 * np.pi) - np.pi
+        ray_index = int(np.round(relative_bearing * self.AZIMUTH_RAYS / (2 * np.pi))) % self.AZIMUTH_RAYS
+        return float(ranges[self.AZIMUTH_RAYS + ray_index] * self.LIDAR_RANGE)
+
     def _collided(self) -> bool:
         client = self.aviary.getPyBulletClient()
         drone_id = int(self.aviary.DRONE_IDS[0])
@@ -240,13 +249,14 @@ class ObstacleNavigationAviary(gym.Env):
         self.steps = 0
         self.previous_distance = float(np.linalg.norm(self.goal - state[:3]))
         ranges = self._sense(state)
+        self.previous_goal_ray_m = self._goal_ray_distance(state, ranges)
         return self._observation(state, ranges), {"distance": self.previous_distance}
 
     def step(self, action: np.ndarray):
         if self.aviary is None or self.controller is None:
             raise RuntimeError("call reset() before step()")
         command = np.asarray(action, dtype=np.float32).reshape(3).clip(-1, 1)
-        self.position_target += command * self.max_speed * self.dt
+        self.position_target += command * np.array([self.max_speed, self.max_speed, 0.18]) * self.dt
         self.position_target = np.clip(self.position_target, [-2, -2, 0.3], [2, 2, 1.8])
         state = None
         collision = False
@@ -265,16 +275,21 @@ class ObstacleNavigationAviary(gym.Env):
         self.steps += 1
         ranges = self._sense(state)
         distance = float(np.linalg.norm(self.goal - state[:3]))
+        goal_ray_m = self._goal_ray_distance(state, ranges)
         success = distance <= self.success_radius
         out_of_bounds = np.any(np.abs(state[:2]) > 2.2) or state[2] < 0.12 or state[2] > 2.0
         crashed = bool(collision or out_of_bounds)
-        proximity_penalty = 0.05 * max(0.0, 0.25 - float(np.min(ranges)))
-        reward = 5.0 * (self.previous_distance - distance) - 0.02 - proximity_penalty
+        # Potential shaping from the sensor beam along the goal direction gives
+        # dense feedback to sidestep a wall and reveal a clear passage.
+        ray_progress = np.clip(goal_ray_m, 0.0, 1.5) - np.clip(self.previous_goal_ray_m, 0.0, 1.5)
+        proximity_penalty = 0.2 * max(0.0, 0.5 - goal_ray_m)
+        reward = 5.0 * (self.previous_distance - distance) + 1.5 * ray_progress - 0.02 - proximity_penalty
         if success:
             reward += 8.0
         if crashed:
             reward -= 12.0
         self.previous_distance = distance
+        self.previous_goal_ray_m = goal_ray_m
         terminated = bool(success or crashed)
         truncated = self.steps >= self.max_episode_steps
         if self.render_mode == "human":
@@ -282,6 +297,7 @@ class ObstacleNavigationAviary(gym.Env):
         return self._observation(state, ranges), float(reward), terminated, truncated, {
             "distance": distance, "is_success": success, "collision": collision,
             "crashed": crashed, "lidar_min_m": float(np.min(ranges) * self.LIDAR_RANGE),
+            "goal_ray_m": goal_ray_m,
         }
 
     def close(self):
