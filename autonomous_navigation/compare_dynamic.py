@@ -99,6 +99,8 @@ def main() -> None:
     parser.add_argument("--policy-hz", type=int, choices=(12, 24, 48), default=12)
     parser.add_argument("--speed-limit", type=float, default=0.90)
     parser.add_argument("--replan-seconds", type=float, default=0.5)
+    parser.add_argument("--obstacle-speed-min", type=float, default=0.12)
+    parser.add_argument("--obstacle-speed-max", type=float, default=0.30)
     args = parser.parse_args()
     if args.episodes <= 0 or args.replan_seconds <= 0:
         parser.error("episodes and replanning interval must be positive")
@@ -107,6 +109,7 @@ def main() -> None:
         scenario="dynamic_random", dynamic_observation=True,
         action_history=args.action_history, policy_hz=args.policy_hz, max_speed=args.speed_limit,
     )
+    env.set_dynamic_speed_range(args.obstacle_speed_min, args.obstacle_speed_max)
     ppo_trials, astar_trials = [], []
     try:
         replan_steps = max(1, round(args.replan_seconds / env.dt))

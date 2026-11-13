@@ -23,6 +23,8 @@ def main() -> None:
     parser.add_argument("--dynamic-observation", action="store_true", help="Use model trained with sensor-only LiDAR history")
     parser.add_argument("--policy-hz", type=int, choices=(12, 24, 48), default=12)
     parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
+    parser.add_argument("--obstacle-speed-min", type=float, default=0.12, help="Minimum randomized dynamic obstacle speed in m/s")
+    parser.add_argument("--obstacle-speed-max", type=float, default=0.30, help="Maximum randomized dynamic obstacle speed in m/s")
     args = parser.parse_args()
     if args.episodes <= 0:
         parser.error("--episodes must be positive")
@@ -30,6 +32,7 @@ def main() -> None:
     env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history,
                                    dynamic_observation=args.dynamic_observation, policy_hz=args.policy_hz,
                                    max_speed=args.speed_limit)
+    env.set_dynamic_speed_range(args.obstacle_speed_min, args.obstacle_speed_max)
     trials = []
     try:
         for index in range(args.episodes):

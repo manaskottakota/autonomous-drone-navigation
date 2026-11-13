@@ -7,7 +7,7 @@ from pathlib import Path
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.utils import get_schedule_fn
+from stable_baselines3.common.utils import FloatSchedule
 
 from autonomous_navigation.obstacle_env import ObstacleNavigationAviary
 
@@ -74,7 +74,7 @@ def main() -> None:
         model.set_random_seed(args.seed)
         model.gamma = args.gamma
         model.learning_rate = args.learning_rate
-        model.lr_schedule = get_schedule_fn(args.learning_rate)
+        model.lr_schedule = FloatSchedule(args.learning_rate)
         for parameter_group in model.policy.optimizer.param_groups:
             parameter_group["lr"] = args.learning_rate
     else:
