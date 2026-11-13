@@ -64,11 +64,12 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=30000)
     parser.add_argument("--training-seed", type=int, default=17)
     parser.add_argument("--output", type=Path, default=Path("autonomous_navigation/results/obstacle_ppo_vs_astar.json"))
+    parser.add_argument("--action-history", action="store_true", help="Use model trained with recent command/progress features")
     args = parser.parse_args()
     if args.episodes <= 0:
         parser.error("--episodes must be positive")
     model = PPO.load(args.model, device="cpu")
-    env = ObstacleNavigationAviary(scenario="random")
+    env = ObstacleNavigationAviary(scenario="random", action_history=args.action_history)
     ppo_trials, astar_trials, no_route = [], [], 0
     try:
         for index in range(args.episodes):

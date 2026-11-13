@@ -96,3 +96,18 @@ def test_obstacle_curriculum_range_and_reachable_seeded_scenes():
             assert route is not None, f"seed {seed} generated a scene without an A* route"
     finally:
         env.close()
+
+
+def test_sensor_policy_history_is_normalized_and_reset_each_episode():
+    env = ObstacleNavigationAviary(scenario="wall", action_history=True, max_episode_steps=3)
+    try:
+        first, _ = env.reset(seed=12)
+        assert first.shape == (6 + env.LIDAR_RAYS + 5,)
+        assert env.observation_space.contains(first)
+        assert np.all(first[-5:] == 0.0)
+        next_obs, _, _, _, _ = env.step(np.ones(3, dtype=np.float32))
+        assert env.observation_space.contains(next_obs)
+        reset_obs, _ = env.reset(seed=13)
+        assert np.all(reset_obs[-5:] == 0.0)
+    finally:
+        env.close()

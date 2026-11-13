@@ -15,9 +15,10 @@ def main() -> None:
     parser.add_argument("--scenario", choices=("wall", "random"), default="wall")
     parser.add_argument("--seed", type=int, default=10000)
     parser.add_argument("--hold-seconds", type=float, default=4.0)
+    parser.add_argument("--action-history", action="store_true", help="Use model trained with recent command/progress features")
     args = parser.parse_args()
     model = PPO.load(args.model, device="cpu")
-    env = ObstacleNavigationAviary(render_mode="human", scenario=args.scenario)
+    env = ObstacleNavigationAviary(render_mode="human", scenario=args.scenario, action_history=args.action_history)
     try:
         obs, _ = env.reset(seed=args.seed)
         done, info = False, {}

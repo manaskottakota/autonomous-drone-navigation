@@ -18,11 +18,12 @@ def main() -> None:
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=10000)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--action-history", action="store_true", help="Use model trained with recent command/progress features")
     args = parser.parse_args()
     if args.episodes <= 0:
         parser.error("--episodes must be positive")
     model = PPO.load(args.model, device="cpu")
-    env = ObstacleNavigationAviary(scenario=args.scenario)
+    env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history)
     trials = []
     try:
         for index in range(args.episodes):

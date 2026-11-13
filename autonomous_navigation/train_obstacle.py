@@ -20,9 +20,10 @@ def main() -> None:
     parser.add_argument("--resume", type=Path, help="Resume training from a saved PPO checkpoint")
     parser.add_argument("--curriculum", action="store_true", help="Progress from 1 to 2 to 4 obstacles")
     parser.add_argument("--gamma", type=float, default=0.99, help="PPO discount factor")
+    parser.add_argument("--action-history", action="store_true", help="Include previous command and sensor-derived progress")
     parser.add_argument("--check-env", action="store_true")
     args = parser.parse_args()
-    env = ObstacleNavigationAviary(scenario=args.scenario)
+    env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history)
     if args.check_env:
         check_env(env, warn=True)
         print("Obstacle environment API check passed")

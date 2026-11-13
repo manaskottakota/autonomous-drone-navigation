@@ -46,6 +46,7 @@ class ObstacleNavigationAviary(gym.Env):
         scenario: str = "random",
         max_episode_steps: int = 200,
         obstacle_count_range: tuple[int, int] = (1, 4),
+        action_history: bool = False,
     ):
         super().__init__()
         if render_mode not in (None, "human"):
@@ -56,13 +57,15 @@ class ObstacleNavigationAviary(gym.Env):
         self.scenario = scenario
         self.max_episode_steps = max_episode_steps
         self.set_obstacle_count_range(*obstacle_count_range)
+        self.action_history = action_history
         self.control_hz = 48
         self.action_repeat = 4
         self.dt = self.action_repeat / self.control_hz
         self.max_speed = 0.45
         self.success_radius = 0.18
         self.action_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
-        obs_size = 6 + self.LIDAR_RAYS
+        self.base_observation_size = 6 + self.LIDAR_RAYS
+        obs_size = self.base_observation_size + (5 if self.action_history else 0)
         self.observation_space = spaces.Box(
             low=np.full(obs_size, -1.0, dtype=np.float32),
             high=np.full(obs_size, 1.0, dtype=np.float32), dtype=np.float32,
@@ -79,6 +82,9 @@ class ObstacleNavigationAviary(gym.Env):
         self.steps = 0
         self.last_ranges = np.ones(self.LIDAR_RAYS, dtype=np.float32)
         self.debug_ray_ids: list[int] = []
+        self.last_action = np.zeros(3, dtype=np.float32)
+        self.last_distance_progress = 0.0
+        self.last_ray_progress = 0.0
 
     def _close_sim(self) -> None:
         if self.aviary is not None:
@@ -190,7 +196,11 @@ class ObstacleNavigationAviary(gym.Env):
     def _observation(self, state: np.ndarray, ranges: np.ndarray) -> np.ndarray:
         goal_relative = np.clip((self.goal - state[:3]) / 3.0, -1, 1)
         velocity = np.clip(state[10:13] / 2.0, -1, 1)
-        return np.concatenate((goal_relative, velocity, ranges)).astype(np.float32)
+        observation = [goal_relative, velocity, ranges]
+        if self.action_history:
+            progress = np.clip([self.last_distance_progress / 0.1, self.last_ray_progress / 1.5], -1, 1)
+            observation.extend((self.last_action, progress))
+        return np.concatenate(observation).astype(np.float32)
 
     def _goal_ray_distance(self, state: np.ndarray, ranges: np.ndarray) -> float:
         """Read the horizontal LiDAR beam most aligned with the relative goal."""
@@ -260,6 +270,9 @@ class ObstacleNavigationAviary(gym.Env):
         self.position_target = state[:3].copy()
         self.steps = 0
         self.previous_distance = float(np.linalg.norm(self.goal - state[:3]))
+        self.last_action.fill(0.0)
+        self.last_distance_progress = 0.0
+        self.last_ray_progress = 0.0
         ranges = self._sense(state)
         self.previous_goal_ray_m = self._goal_ray_distance(state, ranges)
         return self._observation(state, ranges), {"distance": self.previous_distance}
@@ -309,6 +322,9 @@ class ObstacleNavigationAviary(gym.Env):
             reward += 16.0
         if crashed:
             reward -= 25.0
+        self.last_action = command.copy()
+        self.last_distance_progress = self.previous_distance - distance
+        self.last_ray_progress = ray_progress
         self.previous_distance = distance
         self.previous_goal_ray_m = goal_ray_m
         terminated = bool(success or crashed)
