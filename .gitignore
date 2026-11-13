@@ -9,6 +9,8 @@ tmp/
 
 # Learning results
 experiments/learning/results/save-*
+autonomous_navigation/models/*.zip
+autonomous_navigation/models/*.log
 
 # Betaflight
 betaflight_sitl/

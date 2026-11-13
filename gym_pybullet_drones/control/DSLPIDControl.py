@@ -249,8 +249,10 @@ class DSLPIDControl(BaseControl):
         cur_rotation = np.array(p.getMatrixFromQuaternion(cur_quat)).reshape(3, 3)
         cur_rpy = np.array(p.getEulerFromQuaternion(cur_quat))
         target_quat = (Rotation.from_euler('XYZ', target_euler, degrees=False)).as_quat()
-        w,x,y,z = target_quat
-        target_rotation = (Rotation.from_quat([w, x, y, z])).as_matrix()
+        # SciPy and PyBullet both use the [x, y, z, w] quaternion convention.
+        # Reordering these components makes the attitude controller command a
+        # different rotation, causing the drone to flip while tracking goals.
+        target_rotation = Rotation.from_quat(target_quat).as_matrix()
         rot_matrix_e = np.dot((target_rotation.transpose()),cur_rotation) - np.dot(cur_rotation.transpose(),target_rotation)
         rot_e = np.array([rot_matrix_e[2, 1], rot_matrix_e[0, 2], rot_matrix_e[1, 0]]) 
         # PyBullet Euler angles are in radians, so this finite difference is in
