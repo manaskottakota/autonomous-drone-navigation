@@ -46,7 +46,8 @@ def main() -> None:
                 action, _ = model.predict(obs, deterministic=True)
                 latencies.append(time.perf_counter() - infer_started)
                 if args.dynamic_observation and sensor_alert_time is None:
-                    rates = np.abs(obs[env.base_observation_size:env.base_observation_size + env.LIDAR_RAYS]) * 2.0 * env.LIDAR_RANGE
+                    rate_start = env.base_observation_size + (5 if args.action_history else 0)
+                    rates = np.abs(obs[rate_start:rate_start + env.LIDAR_RAYS]) * 2.0 * env.LIDAR_RANGE
                     if np.any(rates > 0.12):
                         sensor_alert_time = steps * env.dt
                 obs, _, terminated, truncated, info = env.step(action)

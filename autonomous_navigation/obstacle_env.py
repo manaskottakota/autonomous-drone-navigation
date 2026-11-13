@@ -305,14 +305,15 @@ class ObstacleNavigationAviary(gym.Env):
         goal_relative = np.clip((self.goal - state[:3]) / 3.0, -1, 1)
         velocity = np.clip(state[10:13] / 2.0, -1, 1)
         observation = [goal_relative, velocity, ranges]
-        if self.dynamic_observation:
-            # A normalized finite difference over consecutive range scans is
-            # sensor history only: no box IDs, coordinates, or velocities.
-            range_rate = (ranges - self.previous_ranges) / max(self.dt, 1e-6)
-            observation.append(np.clip(range_rate / 2.0, -1.0, 1.0))
         if self.action_history:
             progress = np.clip([self.last_distance_progress / 0.1, self.last_ray_progress / 1.5], -1, 1)
             observation.extend((self.last_action, progress))
+        if self.dynamic_observation:
+            # A normalized finite difference over consecutive range scans is
+            # sensor history only: no box IDs, coordinates, or velocities.
+            # It follows the legacy features so static PPO weights transfer.
+            range_rate = (ranges - self.previous_ranges) / max(self.dt, 1e-6)
+            observation.append(np.clip(range_rate / 2.0, -1.0, 1.0))
         return np.concatenate(observation).astype(np.float32)
 
     def _goal_ray_distance(self, state: np.ndarray, ranges: np.ndarray) -> float:

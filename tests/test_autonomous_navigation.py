@@ -6,6 +6,8 @@ from autonomous_navigation.env import sample_scenario
 from autonomous_navigation.obstacle_env import BoxObstacle, ObstacleNavigationAviary
 from autonomous_navigation.obstacle_env import WALL_SCENE
 from autonomous_navigation.planning import astar_route
+from autonomous_navigation.train_obstacle import transfer_policy_state
+import torch
 
 
 def test_reset_observation_and_seeded_scenario():
@@ -209,3 +211,31 @@ def test_policy_frequency_keeps_pid_rate_and_scales_policy_dt():
         assert env.dt == 1 / 24
     finally:
         env.close()
+
+
+def test_dynamic_sensor_history_preserves_legacy_policy_feature_prefix():
+    env = ObstacleNavigationAviary(
+        scenario="dynamic_wall", action_history=True, dynamic_observation=True,
+    )
+    try:
+        obs, _ = env.reset(seed=8)
+        assert obs.shape == (6 + env.LIDAR_RAYS + 5 + env.LIDAR_RAYS,)
+        np.testing.assert_array_equal(obs[env.base_observation_size:env.base_observation_size + 5], 0.0)
+        np.testing.assert_array_equal(obs[-env.LIDAR_RAYS:], 0.0)
+    finally:
+        env.close()
+
+
+def test_policy_transfer_copies_legacy_inputs_and_zeroes_new_sensor_inputs():
+    source = {
+        "mlp_extractor.policy_net.0.weight": torch.full((4, 83), 2.0),
+        "action_net.bias": torch.tensor([1.0, 2.0, 3.0]),
+    }
+    target = {
+        "mlp_extractor.policy_net.0.weight": torch.ones((4, 155)),
+        "action_net.bias": torch.zeros(3),
+    }
+    transferred = transfer_policy_state(target, source)
+    assert torch.all(transferred["mlp_extractor.policy_net.0.weight"][:, :83] == 2.0)
+    assert torch.count_nonzero(transferred["mlp_extractor.policy_net.0.weight"][:, 83:]) == 0
+    assert torch.equal(transferred["action_net.bias"], source["action_net.bias"])

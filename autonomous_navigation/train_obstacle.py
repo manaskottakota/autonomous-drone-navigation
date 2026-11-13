@@ -11,6 +11,25 @@ from stable_baselines3.common.monitor import Monitor
 from autonomous_navigation.obstacle_env import ObstacleNavigationAviary
 
 
+def transfer_policy_state(target_state: dict, source_state: dict) -> dict:
+    """Copy a compatible policy, zero-initializing newly added input features."""
+    transferred = {key: value.clone() for key, value in target_state.items()}
+    for key, source in source_state.items():
+        if key not in transferred:
+            continue
+        target = transferred[key]
+        if target.shape == source.shape:
+            transferred[key] = source.clone()
+        elif (key.endswith(".0.weight") and target.ndim == source.ndim == 2
+              and target.shape[0] == source.shape[0] and target.shape[1] > source.shape[1]):
+            target.zero_()
+            target[:, :source.shape[1]] = source
+            transferred[key] = target
+        else:
+            raise ValueError(f"cannot transfer mismatched policy parameter {key}: {source.shape} -> {target.shape}")
+    return transferred
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scenario", choices=("wall", "random", "dynamic_wall", "dynamic_random"), default="wall")
@@ -18,6 +37,8 @@ def main() -> None:
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--resume", type=Path, help="Resume training from a saved PPO checkpoint")
+    parser.add_argument("--transfer-from", type=Path, help="Initialize from a compatible static policy; added LiDAR-history input weights start at zero")
+    parser.add_argument("--transfer-only", action="store_true", help="Save the transferred policy without training")
     parser.add_argument("--curriculum", action="store_true", help="Progress from 1 to 2 to 4 obstacles")
     parser.add_argument("--gamma", type=float, default=0.99, help="PPO discount factor")
     parser.add_argument("--action-history", action="store_true", help="Include previous command and sensor-derived progress")
@@ -28,6 +49,10 @@ def main() -> None:
     parser.add_argument("--speed-curriculum", action="store_true", help="Increase speed from 0.45 to 0.90 m/s while increasing obstacle count")
     parser.add_argument("--check-env", action="store_true")
     args = parser.parse_args()
+    if args.resume and args.transfer_from:
+        parser.error("--resume and --transfer-from are mutually exclusive")
+    if args.transfer_only and not args.transfer_from:
+        parser.error("--transfer-only requires --transfer-from")
     env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history,
                                    dynamic_observation=args.dynamic_observation, policy_hz=args.policy_hz,
                                    max_speed=args.speed_limit)
@@ -50,8 +75,19 @@ def main() -> None:
             "MlpPolicy", env, verbose=1, seed=args.seed, n_steps=512, batch_size=64,
             learning_rate=3e-4, gamma=args.gamma, device="cpu",
         )
+        if args.transfer_from:
+            source = PPO.load(args.transfer_from, device="cpu")
+            model.policy.load_state_dict(transfer_policy_state(
+                model.policy.state_dict(), source.policy.state_dict(),
+            ))
+            print(f"Initialized policy weights from {args.transfer_from}; sensor-history weights start at zero")
     output = args.output or Path(f"autonomous_navigation/models/obstacle_{args.scenario}")
     output.parent.mkdir(parents=True, exist_ok=True)
+    if args.transfer_only:
+        model.save(output)
+        env.close()
+        print(f"Saved transferred policy to {output}.zip")
+        return
     if args.speed_curriculum and args.scenario == "random":
         phases = ((0.45, 1, 0.20), (0.60, 2, 0.20), (0.75, 3, 0.30), (0.90, 4, 0.30))
         completed = 0
