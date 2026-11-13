@@ -3,6 +3,7 @@ import numpy as np
 
 from autonomous_navigation.env import PointToPointAviary
 from autonomous_navigation.env import sample_scenario
+from autonomous_navigation.obstacle_env import BoxObstacle, ObstacleNavigationAviary
 
 
 def test_reset_observation_and_seeded_scenario():
@@ -35,5 +36,33 @@ def test_action_reward_and_goal_termination():
         assert terminated and not truncated
         assert info["is_success"]
         assert not info["crashed"]
+    finally:
+        env.close()
+
+
+def test_wall_scene_lidar_observation_and_collision_detection():
+    env = ObstacleNavigationAviary(scenario="wall", max_episode_steps=4)
+    try:
+        obs, _ = env.reset(seed=2)
+        assert env.observation_space.contains(obs)
+        assert obs.shape == (6 + env.LIDAR_RAYS,)
+        assert np.any(obs[6:] < 0.95), "wall should be detected by at least one LiDAR ray"
+        assert obs.size == 78, "policy input should contain goal-relative state and LiDAR rays only"
+    finally:
+        env.close()
+
+
+def test_obstacle_contact_terminates_episode():
+    env = ObstacleNavigationAviary(scenario="wall", max_episode_steps=4)
+    try:
+        start = np.array([0.0, 0.0, 0.7])
+        obs, _ = env.reset(seed=3, options={
+            "start": start, "goal": [1.0, 0.0, 0.7],
+            "obstacles": (BoxObstacle((0.0, 0.0, 0.7), (0.3, 0.3, 0.3)),),
+        })
+        _, _, terminated, _, info = env.step(np.zeros(3, dtype=np.float32))
+        assert terminated
+        assert info["collision"]
+        assert info["crashed"]
     finally:
         env.close()
