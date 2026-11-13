@@ -48,6 +48,7 @@ class ObstacleNavigationAviary(gym.Env):
         obstacle_count_range: tuple[int, int] = (1, 4),
         action_history: bool = False,
         max_speed: float = 0.45,
+        visualize_lidar: bool = True,
     ):
         super().__init__()
         if render_mode not in (None, "human"):
@@ -59,6 +60,7 @@ class ObstacleNavigationAviary(gym.Env):
         self.max_episode_steps = max_episode_steps
         self.set_obstacle_count_range(*obstacle_count_range)
         self.action_history = action_history
+        self.visualize_lidar = visualize_lidar
         self.control_hz = 48
         self.action_repeat = 4
         self.dt = self.action_repeat / self.control_hz
@@ -181,12 +183,18 @@ class ObstacleNavigationAviary(gym.Env):
                 endpoints.append((position + self.LIDAR_RANGE * direction).tolist())
         results = p.rayTestBatch(origins, endpoints, physicsClientId=self.aviary.getPyBulletClient())
         self.last_ranges = np.asarray([result[2] for result in results], dtype=np.float32)
-        if self.render_mode == "human":
+        if self.render_mode == "human" and self.visualize_lidar:
             client = self.aviary.getPyBulletClient()
-            for i, ((origin, endpoint), result) in enumerate(zip(zip(origins, endpoints), results)):
+            # Draw the horizontal ring only. The policy still receives all
+            # 72 range beams; drawing the other 48 lines adds GUI overhead
+            # without making the obstacle-avoidance maneuver easier to read.
+            display_indices = range(self.AZIMUTH_RAYS, 2 * self.AZIMUTH_RAYS)
+            for display_index, i in enumerate(display_indices):
+                origin, endpoint = origins[i], endpoints[i]
+                result = results[i]
                 hit = result[3] if result[0] >= 0 else endpoint
                 color = (1, 0.2, 0.1) if result[0] >= 0 else (0.2, 0.7, 1)
-                old_id = self.debug_ray_ids[i] if i < len(self.debug_ray_ids) else None
+                old_id = self.debug_ray_ids[display_index] if display_index < len(self.debug_ray_ids) else None
                 # Keep debug items alive while the simulation runs so their
                 # IDs remain valid when PyBullet replaces them on the next
                 # control step. A short lifetime makes replaceItemUniqueId
@@ -197,10 +205,10 @@ class ObstacleNavigationAviary(gym.Env):
                 debug_id = p.addUserDebugLine(origin, hit, color, lineWidth=1,
                                               lifeTime=0, physicsClientId=client,
                                               **debug_args)
-                if i >= len(self.debug_ray_ids):
+                if display_index >= len(self.debug_ray_ids):
                     self.debug_ray_ids.append(debug_id)
                 else:
-                    self.debug_ray_ids[i] = debug_id
+                    self.debug_ray_ids[display_index] = debug_id
         return self.last_ranges
 
     def _observation(self, state: np.ndarray, ranges: np.ndarray) -> np.ndarray:
@@ -301,18 +309,23 @@ class ObstacleNavigationAviary(gym.Env):
             # The policy and LiDAR only update at 12 Hz, so render once after
             # each four-step PID batch instead.
             p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0, physicsClientId=client)
-        for _ in range(self.action_repeat):
-            prior_position = self.aviary._getDroneStateVector(0)[:3].copy()
-            motor_action, _, _ = self.controller.computeControlFromState(
-                control_timestep=self.aviary.CTRL_TIMESTEP,
-                state=self.aviary._getDroneStateVector(0),
-                target_pos=self.position_target, target_rpy=np.zeros(3),
-            )
-            state_batch, _, _, _, _ = self.aviary.step(motor_action.reshape(1, 4))
-            state = state_batch[0]
-            collision = self._collided() or self._swept_collision(prior_position, state[:3])
-            if collision:
-                break
+        try:
+            for _ in range(self.action_repeat):
+                prior_position = self.aviary._getDroneStateVector(0)[:3].copy()
+                motor_action, _, _ = self.controller.computeControlFromState(
+                    control_timestep=self.aviary.CTRL_TIMESTEP,
+                    state=self.aviary._getDroneStateVector(0),
+                    target_pos=self.position_target, target_rpy=np.zeros(3),
+                )
+                state_batch, _, _, _, _ = self.aviary.step(motor_action.reshape(1, 4))
+                state = state_batch[0]
+                collision = self._collided() or self._swept_collision(prior_position, state[:3])
+                if collision:
+                    break
+        except Exception:
+            if self.render_mode == "human":
+                p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1, physicsClientId=client)
+            raise
         self.steps += 1
         ranges = self._sense(state)
         distance = float(np.linalg.norm(self.goal - state[:3]))
