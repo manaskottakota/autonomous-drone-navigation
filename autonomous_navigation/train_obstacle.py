@@ -13,7 +13,7 @@ from autonomous_navigation.obstacle_env import ObstacleNavigationAviary
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("wall", "random"), default="wall")
+    parser.add_argument("--scenario", choices=("wall", "random", "dynamic_wall", "dynamic_random"), default="wall")
     parser.add_argument("--timesteps", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--output", type=Path)
@@ -21,11 +21,15 @@ def main() -> None:
     parser.add_argument("--curriculum", action="store_true", help="Progress from 1 to 2 to 4 obstacles")
     parser.add_argument("--gamma", type=float, default=0.99, help="PPO discount factor")
     parser.add_argument("--action-history", action="store_true", help="Include previous command and sensor-derived progress")
+    parser.add_argument("--dynamic-observation", action="store_true", help="Append sensor-only LiDAR range-rate history for moving objects")
+    parser.add_argument("--policy-hz", type=int, choices=(12, 24, 48), default=12, help="PPO decision frequency; PID remains 48 Hz and physics 240 Hz")
+    parser.add_argument("--dynamic-curriculum", action="store_true", help="Train from one slow crossing obstacle to randomized mixed dynamic layouts")
     parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
     parser.add_argument("--speed-curriculum", action="store_true", help="Increase speed from 0.45 to 0.90 m/s while increasing obstacle count")
     parser.add_argument("--check-env", action="store_true")
     args = parser.parse_args()
     env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history,
+                                   dynamic_observation=args.dynamic_observation, policy_hz=args.policy_hz,
                                    max_speed=args.speed_limit)
     if args.check_env:
         check_env(env, warn=True)
@@ -61,7 +65,28 @@ def main() -> None:
             model.learn(total_timesteps=phase_steps, reset_num_timesteps=args.resume is None and completed == 0)
             completed += phase_steps
             model.save(f"{output}_speed_stage_{phase}")
-    elif args.curriculum and args.scenario == "random":
+    elif args.dynamic_curriculum:
+        if not args.dynamic_observation:
+            parser.error("--dynamic-curriculum requires --dynamic-observation")
+        phases = (
+            ("dynamic_wall", 0.45, 1, 0.20),
+            ("dynamic_random", 0.60, 2, 0.25),
+            ("dynamic_random", 0.75, 3, 0.30),
+            ("dynamic_random", 0.90, 4, 0.25),
+        )
+        completed = 0
+        for phase, (scenario, speed, max_obstacles, fraction) in enumerate(phases, start=1):
+            phase_steps = args.timesteps - completed if phase == len(phases) else round(args.timesteps * fraction)
+            if phase_steps <= 0:
+                continue
+            base_env.scenario = scenario
+            base_env.set_speed_limit(speed)
+            base_env.set_obstacle_count_range(1, max_obstacles)
+            print(f"Dynamic curriculum phase {phase}: {scenario}, {speed:.2f} m/s, 1-{max_obstacles} boxes, {phase_steps} steps")
+            model.learn(total_timesteps=phase_steps, reset_num_timesteps=args.resume is None and completed == 0)
+            completed += phase_steps
+            model.save(f"{output}_dynamic_stage_{phase}")
+    elif args.curriculum and args.scenario in ("random", "dynamic_random"):
         phases = ((1, 0.25), (2, 0.25), (4, 0.50))
         completed = 0
         for phase, (max_obstacles, fraction) in enumerate(phases, start=1):

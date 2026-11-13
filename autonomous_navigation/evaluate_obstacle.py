@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 
 import numpy as np
@@ -14,17 +15,21 @@ from autonomous_navigation.obstacle_env import ObstacleNavigationAviary
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", help="PPO model path")
-    parser.add_argument("--scenario", choices=("wall", "random"), default="wall")
+    parser.add_argument("--scenario", choices=("wall", "random", "dynamic_wall", "dynamic_random"), default="wall")
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=10000)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--action-history", action="store_true", help="Use model trained with recent command/progress features")
+    parser.add_argument("--dynamic-observation", action="store_true", help="Use model trained with sensor-only LiDAR history")
+    parser.add_argument("--policy-hz", type=int, choices=(12, 24, 48), default=12)
     parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
     args = parser.parse_args()
     if args.episodes <= 0:
         parser.error("--episodes must be positive")
     model = PPO.load(args.model, device="cpu")
-    env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history, max_speed=args.speed_limit)
+    env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history,
+                                   dynamic_observation=args.dynamic_observation, policy_hz=args.policy_hz,
+                                   max_speed=args.speed_limit)
     trials = []
     try:
         for index in range(args.episodes):
@@ -34,9 +39,16 @@ def main() -> None:
             previous = initial.copy()
             path_length, steps = 0.0, 0
             done, info = False, {}
-            distance_history, action_history, step_motion = [], [], []
+            distance_history, action_history, step_motion, latencies = [], [], [], []
+            sensor_alert_time = None
             while not done:
+                infer_started = time.perf_counter()
                 action, _ = model.predict(obs, deterministic=True)
+                latencies.append(time.perf_counter() - infer_started)
+                if args.dynamic_observation and sensor_alert_time is None:
+                    rates = np.abs(obs[env.base_observation_size:env.base_observation_size + env.LIDAR_RAYS]) * 2.0 * env.LIDAR_RANGE
+                    if np.any(rates > 0.12):
+                        sensor_alert_time = steps * env.dt
                 obs, _, terminated, truncated, info = env.step(action)
                 position = env.aviary._getDroneStateVector(0)[:3]
                 distance_history.append(float(info["distance"]))
@@ -69,6 +81,9 @@ def main() -> None:
                 "path_efficiency": net_displacement / max(path_length, 1e-8),
                 "failure_category": failure_category,
                 "minimum_goal_distance_m": float(min(distance_history)),
+                "first_range_rate_alert_s": sensor_alert_time,
+                "policy_inference_median_ms": float(np.median(latencies) * 1000.0),
+                "policy_inference_p95_ms": float(np.percentile(latencies, 95) * 1000.0),
             })
             if (index + 1) % 10 == 0:
                 print(f"Evaluated {index + 1}/{args.episodes}")
@@ -83,6 +98,13 @@ def main() -> None:
             "mean_average_speed_mps": float(np.mean([trial["average_speed_mps"] for trial in successes])) if successes else None,
             "mean_final_distance_m": float(np.mean([trial["final_distance_m"] for trial in trials])),
             "mean_path_efficiency": float(np.mean([trial["path_efficiency"] for trial in trials])),
+            "policy_hz": env.policy_hz,
+            "median_inference_ms": float(np.median([trial["policy_inference_median_ms"] for trial in trials])),
+            "p95_inference_ms": float(np.percentile([trial["policy_inference_p95_ms"] for trial in trials], 95)),
+            "mean_first_range_rate_alert_s": float(np.mean([
+                trial["first_range_rate_alert_s"] for trial in trials
+                if trial["first_range_rate_alert_s"] is not None
+            ])) if any(trial["first_range_rate_alert_s"] is not None for trial in trials) else None,
             "failure_categories": {
                 category: sum(trial["failure_category"] == category for trial in trials)
                 for category in sorted({trial["failure_category"] for trial in trials})

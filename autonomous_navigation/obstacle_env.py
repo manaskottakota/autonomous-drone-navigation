@@ -19,10 +19,29 @@ class BoxObstacle:
     half_extents: tuple[float, float, float]
 
 
+@dataclass(frozen=True)
+class DynamicBoxObstacle:
+    """A box that reflects between bounds at its configured velocity."""
+
+    center: tuple[float, float, float]
+    half_extents: tuple[float, float, float]
+    velocity: tuple[float, float, float]
+    bounds: tuple[tuple[float, float, float], tuple[float, float, float]]
+
+
 WALL_SCENE = {
     "start": (-1.1, 0.0, 0.7),
     "goal": (1.1, 0.0, 0.7),
     "obstacles": (BoxObstacle((0.0, 0.0, 0.75), (0.18, 0.58, 0.75)),),
+}
+DYNAMIC_CROSSING_SCENE = {
+    "start": (-1.1, 0.0, 0.7),
+    "goal": (1.1, 0.0, 0.7),
+    "obstacle": DynamicBoxObstacle(
+        center=(0.0, -0.55, 0.7), half_extents=(0.20, 0.20, 0.45),
+        velocity=(0.0, 0.22, 0.0),
+        bounds=((0.0, -0.65, 0.7), (0.0, 0.65, 0.7)),
+    ),
 }
 
 
@@ -49,26 +68,35 @@ class ObstacleNavigationAviary(gym.Env):
         action_history: bool = False,
         max_speed: float = 0.45,
         visualize_lidar: bool = True,
+        scenario_dynamic: bool = False,
+        dynamic_observation: bool = False,
+        policy_hz: int = 12,
     ):
         super().__init__()
         if render_mode not in (None, "human"):
             raise ValueError("render_mode must be None or 'human'")
-        if scenario not in ("wall", "random"):
-            raise ValueError("scenario must be 'wall' or 'random'")
+        if scenario not in ("wall", "random", "dynamic_wall", "dynamic_random"):
+            raise ValueError("scenario must be wall, random, dynamic_wall, or dynamic_random")
         self.render_mode = render_mode
         self.scenario = scenario
         self.max_episode_steps = max_episode_steps
         self.set_obstacle_count_range(*obstacle_count_range)
         self.action_history = action_history
+        self.scenario_dynamic = scenario_dynamic or scenario == "dynamic_random"
+        self.dynamic_observation = dynamic_observation
         self.visualize_lidar = visualize_lidar
         self.control_hz = 48
-        self.action_repeat = 4
+        if policy_hz <= 0 or self.control_hz % policy_hz:
+            raise ValueError("policy_hz must be a positive divisor of control_hz (48)")
+        self.policy_hz = int(policy_hz)
+        self.action_repeat = self.control_hz // self.policy_hz
         self.dt = self.action_repeat / self.control_hz
         self.set_speed_limit(max_speed)
         self.success_radius = 0.18
         self.action_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
         self.base_observation_size = 6 + self.LIDAR_RAYS
         obs_size = self.base_observation_size + (5 if self.action_history else 0)
+        obs_size += self.LIDAR_RAYS if self.dynamic_observation else 0
         self.observation_space = spaces.Box(
             low=np.full(obs_size, -1.0, dtype=np.float32),
             high=np.full(obs_size, 1.0, dtype=np.float32), dtype=np.float32,
@@ -76,7 +104,11 @@ class ObstacleNavigationAviary(gym.Env):
         self.aviary: CtrlAviary | None = None
         self.controller: DSLPIDControl | None = None
         self.obstacles: tuple[BoxObstacle, ...] = ()
+        self.dynamic_obstacles: tuple[DynamicBoxObstacle, ...] = ()
         self.obstacle_ids: list[int] = []
+        self.dynamic_centers: list[np.ndarray] = []
+        self.dynamic_previous_centers: list[np.ndarray] = []
+        self.dynamic_velocities: list[np.ndarray] = []
         self.start_position = np.zeros(3)
         self.goal = np.zeros(3)
         self.position_target = np.zeros(3)
@@ -86,7 +118,9 @@ class ObstacleNavigationAviary(gym.Env):
         self.action_smoothness_weight = 0.05
         self.steps = 0
         self.last_ranges = np.ones(self.LIDAR_RAYS, dtype=np.float32)
+        self.previous_ranges = np.ones(self.LIDAR_RAYS, dtype=np.float32)
         self.debug_ray_ids: list[int] = []
+        self.debug_status_id: int | None = None
         self.last_action = np.zeros(3, dtype=np.float32)
         self.last_distance_progress = 0.0
         self.last_ray_progress = 0.0
@@ -96,7 +130,11 @@ class ObstacleNavigationAviary(gym.Env):
             self.aviary.close()
             self.aviary = None
         self.obstacle_ids.clear()
+        self.dynamic_centers.clear()
+        self.dynamic_previous_centers.clear()
+        self.dynamic_velocities.clear()
         self.debug_ray_ids.clear()
+        self.debug_status_id = None
 
     def _random_scenario(self):
         start = np.array([
@@ -148,11 +186,17 @@ class ObstacleNavigationAviary(gym.Env):
 
     def _create_obstacles(self) -> None:
         client = self.aviary.getPyBulletClient()
-        for obstacle in self.obstacles:
+        self.dynamic_centers = [np.asarray(obstacle.center, dtype=float) for obstacle in self.dynamic_obstacles]
+        self.dynamic_previous_centers = [center.copy() for center in self.dynamic_centers]
+        self.dynamic_velocities = [np.asarray(obstacle.velocity, dtype=float) for obstacle in self.dynamic_obstacles]
+        obstacle_specs = [(obstacle, False) for obstacle in self.obstacles]
+        obstacle_specs += [(BoxObstacle(item.center, item.half_extents), True) for item in self.dynamic_obstacles]
+        for obstacle, is_dynamic in obstacle_specs:
             shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=obstacle.half_extents, physicsClientId=client)
             visual = p.createVisualShape(
                 p.GEOM_BOX, halfExtents=obstacle.half_extents,
-                rgbaColor=(0.85, 0.18, 0.12, 1), physicsClientId=client,
+                rgbaColor=(0.92, 0.48, 0.08, 1) if is_dynamic else (0.85, 0.18, 0.12, 1),
+                physicsClientId=client,
             )
             body = p.createMultiBody(
                 baseMass=0, baseCollisionShapeIndex=shape, baseVisualShapeIndex=visual,
@@ -164,6 +208,50 @@ class ObstacleNavigationAviary(gym.Env):
                                 lifeTime=0, physicsClientId=client)
             p.addUserDebugText("goal", self.goal + np.array([0, 0, 0.15]), (0.1, 0.8, 0.2),
                                physicsClientId=client)
+
+    def _advance_dynamic_obstacles(self) -> None:
+        """Advance moving boxes one PID/physics control interval with reflection."""
+        if not self.dynamic_obstacles:
+            return
+        client = self.aviary.getPyBulletClient()
+        dt = self.aviary.CTRL_TIMESTEP
+        for index, obstacle in enumerate(self.dynamic_obstacles):
+            center = self.dynamic_centers[index]
+            self.dynamic_previous_centers[index] = center.copy()
+            velocity = self.dynamic_velocities[index]
+            lower, upper = map(np.asarray, obstacle.bounds)
+            proposed = center + velocity * dt
+            for axis in range(3):
+                if proposed[axis] < lower[axis] or proposed[axis] > upper[axis]:
+                    proposed[axis] = np.clip(proposed[axis], lower[axis], upper[axis])
+                    velocity[axis] *= -1.0
+            self.dynamic_centers[index] = proposed
+            body_id = self.obstacle_ids[len(self.obstacles) + index]
+            p.resetBasePositionAndOrientation(body_id, proposed.tolist(), [0, 0, 0, 1], physicsClientId=client)
+
+    def _dynamic_scenario(self, start: np.ndarray, goal: np.ndarray, obstacles: tuple[BoxObstacle, ...]):
+        """Convert selected boxes to bounded movers without exposing their state to the policy."""
+        movers: list[DynamicBoxObstacle] = []
+        static: list[BoxObstacle] = []
+        direction = goal[:2] - start[:2]
+        perpendicular = np.array([-direction[1], direction[0]])
+        perpendicular /= max(np.linalg.norm(perpendicular), 1e-8)
+        for index, obstacle in enumerate(obstacles):
+            should_move = index == 0 or self.np_random.random() < 0.35
+            if not should_move:
+                static.append(obstacle)
+                continue
+            center = np.asarray(obstacle.center, dtype=float)
+            speed = float(self.np_random.uniform(0.12, 0.30))
+            velocity = np.array([perpendicular[0] * speed, perpendicular[1] * speed, 0.0])
+            extent = max(0.55, abs(perpendicular[0]) * 0.65 + abs(perpendicular[1]) * 0.65)
+            lower, upper = center.copy(), center.copy()
+            lower[:2] -= np.abs(perpendicular) * extent
+            upper[:2] += np.abs(perpendicular) * extent
+            movers.append(DynamicBoxObstacle(
+                tuple(center), obstacle.half_extents, tuple(velocity), (tuple(lower), tuple(upper)),
+            ))
+        return tuple(static), tuple(movers)
 
     def _sense(self, state: np.ndarray) -> np.ndarray:
         position = state[:3]
@@ -217,6 +305,11 @@ class ObstacleNavigationAviary(gym.Env):
         goal_relative = np.clip((self.goal - state[:3]) / 3.0, -1, 1)
         velocity = np.clip(state[10:13] / 2.0, -1, 1)
         observation = [goal_relative, velocity, ranges]
+        if self.dynamic_observation:
+            # A normalized finite difference over consecutive range scans is
+            # sensor history only: no box IDs, coordinates, or velocities.
+            range_rate = (ranges - self.previous_ranges) / max(self.dt, 1e-6)
+            observation.append(np.clip(range_rate / 2.0, -1.0, 1.0))
         if self.action_history:
             progress = np.clip([self.last_distance_progress / 0.1, self.last_ray_progress / 1.5], -1, 1)
             observation.extend((self.last_action, progress))
@@ -246,19 +339,28 @@ class ObstacleNavigationAviary(gym.Env):
         """Catch brief contacts that resolve between PyBullet control frames."""
         padding = 0.08  # approximate horizontal/vertical collision radius of the Crazyflie
         direction = end - start
-        for obstacle in self.obstacles:
-            center = np.asarray(obstacle.center)
+        specs = [(obstacle, np.asarray(obstacle.center), np.asarray(obstacle.center))
+                 for obstacle in self.obstacles]
+        for index, obstacle in enumerate(self.dynamic_obstacles):
+            current = self.dynamic_centers[index]
+            prior = self.dynamic_previous_centers[index]
+            specs.append((BoxObstacle(obstacle.center, obstacle.half_extents), prior, current))
+        for obstacle, center_start, center_end in specs:
+            # Relative motion catches contacts even when a box crosses the
+            # drone between two PyBullet integration frames.
+            relative_start = start - center_start
+            direction = (end - center_end) - relative_start
             extent = np.asarray(obstacle.half_extents) + padding
-            lower, upper = center - extent, center + extent
+            lower, upper = -extent, extent
             near, far = 0.0, 1.0
             for axis in range(3):
                 if abs(direction[axis]) < 1e-9:
-                    if start[axis] < lower[axis] or start[axis] > upper[axis]:
+                    if relative_start[axis] < lower[axis] or relative_start[axis] > upper[axis]:
                         near, far = 1.0, 0.0
                         break
                     continue
-                t1 = (lower[axis] - start[axis]) / direction[axis]
-                t2 = (upper[axis] - start[axis]) / direction[axis]
+                t1 = (lower[axis] - relative_start[axis]) / direction[axis]
+                t2 = (upper[axis] - relative_start[axis]) / direction[axis]
                 near = max(near, min(t1, t2))
                 far = min(far, max(t1, t2))
             if near <= far and far >= 0.0 and near <= 1.0:
@@ -272,17 +374,30 @@ class ObstacleNavigationAviary(gym.Env):
             start = np.asarray(options["start"], dtype=float)
             goal = np.asarray(options["goal"], dtype=float)
             obstacles = tuple(options["obstacles"])
+            dynamic_obstacles = tuple(options.get("dynamic_obstacles", ()))
         elif self.scenario == "wall":
             start = np.asarray(WALL_SCENE["start"], dtype=float)
             goal = np.asarray(WALL_SCENE["goal"], dtype=float)
             obstacles = WALL_SCENE["obstacles"]
+            dynamic_obstacles = ()
+        elif self.scenario == "dynamic_wall":
+            start = np.asarray(DYNAMIC_CROSSING_SCENE["start"], dtype=float)
+            goal = np.asarray(DYNAMIC_CROSSING_SCENE["goal"], dtype=float)
+            obstacles = ()
+            dynamic_obstacles = (DYNAMIC_CROSSING_SCENE["obstacle"],)
         else:
             start, goal, obstacles = self._random_scenario()
+            dynamic_obstacles = ()
+            if self.scenario_dynamic or self.scenario == "dynamic_random":
+                obstacles, dynamic_obstacles = self._dynamic_scenario(start, goal, obstacles)
         if start.shape != (3,) or goal.shape != (3,):
             raise ValueError("start and goal must each contain three coordinates")
         if any(not isinstance(obstacle, BoxObstacle) for obstacle in obstacles):
             raise TypeError("obstacles must be BoxObstacle instances")
+        if any(not isinstance(obstacle, DynamicBoxObstacle) for obstacle in dynamic_obstacles):
+            raise TypeError("dynamic_obstacles must be DynamicBoxObstacle instances")
         self.start_position, self.goal, self.obstacles = start.copy(), goal.copy(), tuple(obstacles)
+        self.dynamic_obstacles = tuple(dynamic_obstacles)
         self.aviary = CtrlAviary(
             drone_model=DroneModel.CF2X, num_drones=1,
             initial_xyzs=start.reshape(1, 3), initial_rpys=np.zeros((1, 3)),
@@ -300,6 +415,7 @@ class ObstacleNavigationAviary(gym.Env):
         self.last_distance_progress = 0.0
         self.last_ray_progress = 0.0
         ranges = self._sense(state)
+        self.previous_ranges = ranges.copy()
         self.previous_goal_ray_m = self._goal_ray_distance(state, ranges)
         return self._observation(state, ranges), {"distance": self.previous_distance}
 
@@ -319,6 +435,7 @@ class ObstacleNavigationAviary(gym.Env):
             p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 0, physicsClientId=client)
         try:
             for _ in range(self.action_repeat):
+                self._advance_dynamic_obstacles()
                 prior_position = self.aviary._getDroneStateVector(0)[:3].copy()
                 motor_action, _, _ = self.controller.computeControlFromState(
                     control_timestep=self.aviary.CTRL_TIMESTEP,
@@ -370,11 +487,28 @@ class ObstacleNavigationAviary(gym.Env):
         truncated = self.steps >= self.max_episode_steps
         if self.render_mode == "human":
             p.configureDebugVisualizer(p.COV_ENABLE_RENDERING, 1, physicsClientId=client)
-        return self._observation(state, ranges), float(reward), terminated, truncated, {
+        observation = self._observation(state, ranges)
+        self.previous_ranges = ranges.copy()
+        if self.render_mode == "human":
+            status = "GOAL" if success else ("COLLISION" if collision else ("OUT OF BOUNDS" if out_of_bounds else "NAVIGATING"))
+            text = (f"{status}  speed {horizontal_speed:.2f} m/s  "
+                    f"LiDAR {float(np.min(ranges) * self.LIDAR_RANGE):.2f} m  "
+                    f"policy {self.policy_hz} Hz")
+            text_args = {}
+            if self.debug_status_id is not None:
+                text_args["replaceItemUniqueId"] = self.debug_status_id
+            self.debug_status_id = p.addUserDebugText(
+                text, (float(state[0]), float(state[1]), float(state[2]) + 0.35),
+                (0.15, 0.95, 0.25) if success else (1.0, 0.8, 0.1),
+                textSize=1.2, lifeTime=0, physicsClientId=client, **text_args,
+            )
+        return observation, float(reward), terminated, truncated, {
             "distance": distance, "is_success": success, "collision": collision,
             "crashed": crashed, "lidar_min_m": float(np.min(ranges) * self.LIDAR_RANGE),
             "goal_ray_m": goal_ray_m,
             "horizontal_clearance_m": horizontal_clearance_m,
+            "dynamic_obstacle_count": len(self.dynamic_obstacles),
+            "policy_hz": self.policy_hz,
         }
 
     def close(self):

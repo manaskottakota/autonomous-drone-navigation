@@ -160,3 +160,52 @@ def test_obstacle_clearance_margin_grows_with_flight_speed():
         assert fast_penalty > slow_penalty
     finally:
         env.close()
+
+
+def test_dynamic_obstacle_moves_and_sensor_history_is_bounded():
+    env = ObstacleNavigationAviary(
+        scenario="dynamic_wall", dynamic_observation=True, max_episode_steps=3,
+    )
+    try:
+        obs, _ = env.reset(seed=17)
+        assert obs.shape == (6 + env.LIDAR_RAYS * 2,)
+        assert env.observation_space.contains(obs)
+        initial_center = env.dynamic_centers[0].copy()
+        next_obs, _, _, _, info = env.step(np.zeros(3, dtype=np.float32))
+        assert env.dynamic_centers[0][1] > initial_center[1]
+        assert info["dynamic_obstacle_count"] == 1
+        assert env.observation_space.contains(next_obs)
+        assert np.all(np.isfinite(next_obs))
+    finally:
+        env.close()
+
+
+def test_dynamic_obstacle_reflects_at_bounds_and_swept_collision_uses_motion():
+    env = ObstacleNavigationAviary(scenario="dynamic_wall")
+    try:
+        env.reset(seed=3)
+        mover = env.dynamic_obstacles[0]
+        env.dynamic_centers[0] = np.asarray(mover.bounds[1], dtype=float) - np.array([0.0, 0.001, 0.0])
+        env.dynamic_velocities[0] = np.array([0.0, 0.22, 0.0])
+        env._advance_dynamic_obstacles()
+        assert env.dynamic_velocities[0][1] < 0
+
+        # A stationary drone is hit by a box that crosses between the two
+        # centers, even if neither endpoint overlaps its collision volume.
+        env.dynamic_previous_centers[0] = np.array([0.0, -0.5, 0.7])
+        env.dynamic_centers[0] = np.array([0.0, 0.5, 0.7])
+        assert env._swept_collision(np.array([0.0, 0.0, 0.7]), np.array([0.0, 0.0, 0.7]))
+    finally:
+        env.close()
+
+
+def test_policy_frequency_keeps_pid_rate_and_scales_policy_dt():
+    env = ObstacleNavigationAviary(scenario="dynamic_wall", policy_hz=24)
+    try:
+        env.reset(seed=4)
+        assert env.policy_hz == 24
+        assert env.control_hz == 48
+        assert env.action_repeat == 2
+        assert env.dt == 1 / 24
+    finally:
+        env.close()
