@@ -151,3 +151,120 @@ still slower than real time.
   --model autonomous_navigation/models/obstacle_speed_curriculum_seed43.zip \
   --scenario wall --action-history --speed-limit 0.90
 ```
+
+## Dynamic obstacle avoidance (Milestone 5)
+
+Dynamic boxes are PyBullet collision bodies whose poses advance at the 48 Hz
+PID/control rate. Bounded trajectories include perpendicular crossings and
+signed same-direction/head-on motion. Randomized scenes mix static and moving
+boxes and vary mover speeds. Collision checking uses relative swept motion
+between physics updates so a box cannot pass through the drone between samples.
+Existing static scenes and checkpoints remain unchanged.
+
+The dynamic PPO observation can append 72 normalized LiDAR range-rate values
+computed from consecutive scans. It contains no obstacle coordinates, body IDs,
+or velocities. Its legacy input prefix can be initialized from a successful
+static policy while zero-initializing weights for new sensor history:
+
+```sh
+./.venv/bin/python -m autonomous_navigation.train_obstacle \
+  --scenario dynamic_wall --dynamic-observation --action-history --policy-hz 12 \
+  --transfer-from autonomous_navigation/models/obstacle_speed_curriculum_seed43.zip \
+  --transfer-only --output autonomous_navigation/models/dynamic_transfer_baseline_seed43
+./.venv/bin/python -m autonomous_navigation.train_obstacle \
+  --scenario dynamic_wall --dynamic-observation --action-history --policy-hz 12 \
+  --resume autonomous_navigation/models/dynamic_transfer_baseline_seed43.zip \
+  --dynamic-curriculum --gamma 0.995 --learning-rate 0.00003 \
+  --timesteps 120000 --seed 551 \
+  --output autonomous_navigation/models/dynamic_finetune_low_lr_seed551
+```
+
+The curriculum starts with one slow moving box, then advances to 1–4 mixed
+obstacles, obstacle speeds from 0.12 to 0.40 m/s, and 0.45–0.90 m/s command
+limits. PPO decision frequency is configurable at 12/24/48 Hz; PID remains at
+48 Hz and PyBullet physics at 240 Hz. The default episode duration stays at
+16.67 s at each policy rate (400 steps at 24 Hz). On this Mac, policy inference
+measured 0.12 ms median and 0.31 ms p95 at 12 Hz (an 83 ms budget), and 0.12 ms
+median / 0.30 ms p95 at 24 Hz (a 41.7 ms budget). Physics and batched LiDAR
+rays already run inside PyBullet's native code, so profiling did not identify
+a useful C++ extension to maintain.
+
+Held-out results at a 0.90 m/s command limit:
+
+- Across 200 dynamic scenes with crossing, head-on, and same-direction movers
+  at 0.12–0.30 m/s (seeds 87000–87199), the zero-shot transferred checkpoint
+  achieved 92.5% success and 1.5% collisions, with 7.24 s mean successful time,
+  0.856 m/s path speed, and 0.328 path efficiency.
+- A low-learning-rate PPO fine-tune (120,000 steps at 3e-5) achieved 92.0%
+  success and 2.5% collisions at 12 Hz on a separate 200-scene set (seeds
+  88000–88199, movers up to 0.30 m/s). On the same seeds the transferred
+  checkpoint achieved 90.5% and 3.0% collisions; the fine-tune had 10
+  fine-tune-only successes versus 7 baseline-only successes, faster completion
+  (6.48 vs 7.12 s), and better path efficiency (0.359 vs 0.324).
+- For movers up to 0.40 m/s, the 12 Hz fine-tune achieved 92.0% success and
+  4.0% collisions on seeds 89000–89199. The transferred checkpoint achieved
+  88.5% and 3.5% on the same seeds: range-history inputs improved completion
+  and path efficiency, but did not lower collision risk.
+- On a paired 100-scene 0.40 m/s mover set (seeds 90000–90099), raising policy
+  decisions from 12 to 24 Hz improved the transferred policy from 92% success
+  / 2% collisions to 98% / 1%, with similar successful completion time (7.48
+  vs 7.54 s) and better efficiency (0.328 vs 0.303). On 200 final scenes at
+  24 Hz (seeds 90000–90199), it reached 95% with 3.5% collisions, 7.29 s mean
+  successful time, and 0.337 path efficiency. The 100-scene result was an
+  interim subset; use the 200-scene result for the final estimate. Its first
+  sensor-derived LiDAR range-rate threshold alert averaged 0.105 s; that is
+  sensor detection timing, not an independently measured evasive reaction time.
+- A separate high-learning-rate fine-tune degraded to 89.5% success / 4.5%
+  collisions on crossing-only seeds 84000–84199. Fresh PPO from random
+  initialization reached 0/100 on its initial held-out set. Transfer learning
+  was important; range-history fine-tuning has not consistently lowered
+  collision risk below the simpler transferred policy.
+- On paired seeds 84000–84099, PPO achieved 91% success with 2% collisions.
+  Live-map A* replanning every 0.5 seconds achieved 72% success with 27%
+  collisions. A* has privileged current obstacle geometry, but this snapshot
+  planner does not predict motion and is not an upper bound.
+- Fresh PPO training from random initialization did not learn reliably in the
+  120,000-step run: it achieved 0/100 successes on its randomized held-out set.
+  Transfer initialization was important for stable goal reaching.
+- A static-map A* reachability audit found routes in all 200 sampled scenes
+  with seeds 20000–20199. This checks geometric reachability, not every
+  time-dependent interaction.
+
+Per-episode reports remain in `autonomous_navigation/results/` and model files
+in `autonomous_navigation/models/`; both are ignored by Git. Run paired dynamic
+PPO/live-map A* evaluation with:
+
+```sh
+./.venv/bin/python -m autonomous_navigation.compare_dynamic \
+  autonomous_navigation/models/dynamic_transfer_baseline_seed43.zip \
+  --action-history --policy-hz 12 --speed-limit 0.90 --episodes 100 --seed 84000
+```
+
+For the moving-wall visualization, launch an interactive macOS Terminal, then
+run:
+
+```sh
+cd ~/gym-pybullet-drones
+source .venv/bin/activate
+./.venv/bin/python -m autonomous_navigation.obstacle_demo \
+  --model autonomous_navigation/models/dynamic_finetune_low_lr_seed551.zip \
+  --scenario dynamic_wall --dynamic-observation --action-history \
+  --policy-hz 24 --speed-limit 0.90 --seed 86000
+```
+
+The GUI shows moving boxes in amber, the horizontal LiDAR ring, and status text
+with speed and nearest range. A headless PyBullet recording with projected
+LiDAR rays is available at `results/dynamic_wall_demo.mp4`; the low-rate
+fine-tuned policy reached the goal without collision in 3.79 s at 0.848 m/s.
+Regenerate it with:
+
+```sh
+./.venv/bin/python -m autonomous_navigation.record_dynamic_demo \
+  --model autonomous_navigation/models/dynamic_finetune_low_lr_seed551.zip \
+  --scenario dynamic_wall --action-history --policy-hz 24 --speed-limit 0.90 \
+  --seed 86000 --output autonomous_navigation/results/dynamic_wall_demo.mp4
+```
+
+A background GUI launch aborted with macOS `SIGABRT` during AppKit application
+registration. The PyBullet DIRECT-rendered video works; the interactive GUI
+command still needs direct confirmation from a regular macOS Terminal.
