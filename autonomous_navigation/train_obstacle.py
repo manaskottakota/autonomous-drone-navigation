@@ -7,6 +7,7 @@ from pathlib import Path
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.monitor import Monitor
+from stable_baselines3.common.utils import get_schedule_fn
 
 from autonomous_navigation.obstacle_env import ObstacleNavigationAviary
 
@@ -41,6 +42,7 @@ def main() -> None:
     parser.add_argument("--transfer-only", action="store_true", help="Save the transferred policy without training")
     parser.add_argument("--curriculum", action="store_true", help="Progress from 1 to 2 to 4 obstacles")
     parser.add_argument("--gamma", type=float, default=0.99, help="PPO discount factor")
+    parser.add_argument("--learning-rate", type=float, default=3e-4, help="PPO learning rate; set lower when fine-tuning a transferred policy")
     parser.add_argument("--action-history", action="store_true", help="Include previous command and sensor-derived progress")
     parser.add_argument("--dynamic-observation", action="store_true", help="Append sensor-only LiDAR range-rate history for moving objects")
     parser.add_argument("--policy-hz", type=int, choices=(12, 24, 48), default=12, help="PPO decision frequency; PID remains 48 Hz and physics 240 Hz")
@@ -71,10 +73,14 @@ def main() -> None:
         model = PPO.load(args.resume, env=env, device="cpu")
         model.set_random_seed(args.seed)
         model.gamma = args.gamma
+        model.learning_rate = args.learning_rate
+        model.lr_schedule = get_schedule_fn(args.learning_rate)
+        for parameter_group in model.policy.optimizer.param_groups:
+            parameter_group["lr"] = args.learning_rate
     else:
         model = PPO(
             "MlpPolicy", env, verbose=1, seed=args.seed, n_steps=512, batch_size=64,
-            learning_rate=3e-4, gamma=args.gamma, device="cpu",
+            learning_rate=args.learning_rate, gamma=args.gamma, device="cpu",
         )
         if args.transfer_from:
             source = PPO.load(args.transfer_from, device="cpu")
