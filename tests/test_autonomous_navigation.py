@@ -4,6 +4,8 @@ import numpy as np
 from autonomous_navigation.env import PointToPointAviary
 from autonomous_navigation.env import sample_scenario
 from autonomous_navigation.obstacle_env import BoxObstacle, ObstacleNavigationAviary
+from autonomous_navigation.obstacle_env import WALL_SCENE
+from autonomous_navigation.planning import astar_route
 
 
 def test_reset_observation_and_seeded_scenario():
@@ -66,3 +68,16 @@ def test_obstacle_contact_terminates_episode():
         assert info["crashed"]
     finally:
         env.close()
+
+
+def test_map_aware_planner_routes_around_fixed_wall():
+    route = astar_route(
+        np.asarray(WALL_SCENE["start"], dtype=float),
+        np.asarray(WALL_SCENE["goal"], dtype=float),
+        WALL_SCENE["obstacles"],
+        cruise_z=0.7,
+    )
+    assert route is not None
+    np.testing.assert_allclose(route[0], WALL_SCENE["start"])
+    np.testing.assert_allclose(route[-1], WALL_SCENE["goal"])
+    assert len(route) >= 3, "route should bend around the wall rather than cut through it"

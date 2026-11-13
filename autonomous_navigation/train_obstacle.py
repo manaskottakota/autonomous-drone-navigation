@@ -17,6 +17,7 @@ def main() -> None:
     parser.add_argument("--timesteps", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--resume", type=Path, help="Resume training from a saved PPO checkpoint")
     parser.add_argument("--check-env", action="store_true")
     args = parser.parse_args()
     env = ObstacleNavigationAviary(scenario=args.scenario)
@@ -26,11 +27,15 @@ def main() -> None:
         env.close()
         return
     env = Monitor(env)
-    model = PPO(
-        "MlpPolicy", env, verbose=1, seed=args.seed, n_steps=512, batch_size=64,
-        learning_rate=3e-4, gamma=0.99, device="cpu",
-    )
-    model.learn(total_timesteps=args.timesteps)
+    if args.resume:
+        model = PPO.load(args.resume, env=env, device="cpu")
+        model.learn(total_timesteps=args.timesteps, reset_num_timesteps=False)
+    else:
+        model = PPO(
+            "MlpPolicy", env, verbose=1, seed=args.seed, n_steps=512, batch_size=64,
+            learning_rate=3e-4, gamma=0.99, device="cpu",
+        )
+        model.learn(total_timesteps=args.timesteps)
     output = args.output or Path(f"autonomous_navigation/models/obstacle_{args.scenario}")
     output.parent.mkdir(parents=True, exist_ok=True)
     model.save(output)

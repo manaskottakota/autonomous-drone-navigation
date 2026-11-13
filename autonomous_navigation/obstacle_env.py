@@ -166,8 +166,12 @@ class ObstacleNavigationAviary(gym.Env):
                 hit = result[3] if result[0] >= 0 else endpoint
                 color = (1, 0.2, 0.1) if result[0] >= 0 else (0.2, 0.7, 1)
                 old_id = self.debug_ray_ids[i] if i < len(self.debug_ray_ids) else -1
+                # Keep debug items alive while the simulation runs so their
+                # IDs remain valid when PyBullet replaces them on the next
+                # control step. A short lifetime makes replaceItemUniqueId
+                # fail once the item expires (notably in the macOS GUI build).
                 debug_id = p.addUserDebugLine(origin, hit, color, lineWidth=1,
-                                              lifeTime=0.12, replaceItemUniqueId=old_id,
+                                              lifeTime=0, replaceItemUniqueId=old_id,
                                               physicsClientId=client)
                 if i >= len(self.debug_ray_ids):
                     self.debug_ray_ids.append(debug_id)
@@ -282,12 +286,16 @@ class ObstacleNavigationAviary(gym.Env):
         # Potential shaping from the sensor beam along the goal direction gives
         # dense feedback to sidestep a wall and reveal a clear passage.
         ray_progress = np.clip(goal_ray_m, 0.0, 1.5) - np.clip(self.previous_goal_ray_m, 0.0, 1.5)
-        proximity_penalty = 0.2 * max(0.0, 0.5 - goal_ray_m)
+        horizontal_clearance_m = float(np.min(ranges[self.AZIMUTH_RAYS:2 * self.AZIMUTH_RAYS]) * self.LIDAR_RANGE)
+        proximity_penalty = (
+            0.2 * max(0.0, 0.5 - goal_ray_m)
+            + 0.8 * max(0.0, 0.45 - horizontal_clearance_m)
+        )
         reward = 5.0 * (self.previous_distance - distance) + 1.5 * ray_progress - 0.02 - proximity_penalty
         if success:
             reward += 8.0
         if crashed:
-            reward -= 12.0
+            reward -= 25.0
         self.previous_distance = distance
         self.previous_goal_ray_m = goal_ray_m
         terminated = bool(success or crashed)
@@ -298,6 +306,7 @@ class ObstacleNavigationAviary(gym.Env):
             "distance": distance, "is_success": success, "collision": collision,
             "crashed": crashed, "lidar_min_m": float(np.min(ranges) * self.LIDAR_RANGE),
             "goal_ray_m": goal_ray_m,
+            "horizontal_clearance_m": horizontal_clearance_m,
         }
 
     def close(self):

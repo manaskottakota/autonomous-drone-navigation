@@ -66,7 +66,7 @@ scene is available for the first training stage; randomized scenes contain one
 to four static boxes.
 
 ```sh
-./.venv/bin/python -m autonomous_navigation.train_obstacle --scenario wall --timesteps 100000 --seed 17
+./.venv/bin/python -m autonomous_navigation.train_obstacle --scenario wall --timesteps 50000 --seed 17
 ./.venv/bin/python -m autonomous_navigation.evaluate_obstacle autonomous_navigation/models/obstacle_wall.zip --scenario wall --episodes 20 --seed 10000
 ./.venv/bin/python -m autonomous_navigation.obstacle_demo --model autonomous_navigation/models/obstacle_wall.zip --scenario wall
 ```
@@ -74,3 +74,18 @@ to four static boxes.
 For randomized multi-obstacle training and evaluation, use `--scenario random`
 and hold out evaluation seeds from the training seed range. The evaluator saves
 per-trial success, collision, completion time, and path-efficiency results.
+
+```sh
+./.venv/bin/python -m autonomous_navigation.train_obstacle --scenario random --timesteps 100000 --seed 17 --output autonomous_navigation/models/obstacle_random
+./.venv/bin/python -m autonomous_navigation.compare_obstacles autonomous_navigation/models/obstacle_random.zip --episodes 100 --seed 30000 --training-seed 17
+```
+
+The fixed-wall model reached 20/20 held-out seeds after 50,176 PPO steps. The
+random-layout model was trained to 501,760 total steps and reached 68/100
+held-out scenes (seeds 30000–30099) with zero collisions. The map-aware A* route
+planner reached 100/100 with zero collisions, 5.82 s mean completion time, and
+0.639 mean path efficiency. PPO's successful episodes averaged 5.86 s and 0.564
+path efficiency. Its XY grid assumes constant cruise altitude and is given the
+obstacle map; PPO only receives LiDAR, relative goal position, and velocity.
+The randomized PPO result is a working baseline, not yet a reliable replacement
+for planning.
