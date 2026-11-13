@@ -278,7 +278,7 @@ def test_mixed_obstacle_geometries_create_lidar_hits_and_gate_opening():
         obstacles = (
             CylinderObstacle((0.0, -0.7, 0.7), 0.22, 1.2),
             SphereObstacle((0.0, -0.35, 0.7), 0.24),
-            GateObstacle((0.0, 0.7, 0.9), 0.9, 1.8),
+            GateObstacle((0.0, 0.0, 0.9), 0.9, 1.8),
         )
         obs, _ = env.reset(seed=21, options={
             "start": [-1.1, 0.0, 0.7], "goal": [1.1, 0.0, 0.7], "obstacles": obstacles,
@@ -288,7 +288,7 @@ def test_mixed_obstacle_geometries_create_lidar_hits_and_gate_opening():
         # used by the same PyBullet batched ray sensor as policy observations.
         assert len(env.obstacle_ids) == 5
         assert np.any(obs[6:] < 0.95)
-        # Gate has a clear center aperture; direct ray at y=0 does not hit its lintel/posts.
+        # The direct ray at y=0 passes through the gate's real center aperture.
         assert env.last_ranges[env.AZIMUTH_RAYS] > 0.95
     finally:
         env.close()
