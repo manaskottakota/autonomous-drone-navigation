@@ -19,6 +19,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--resume", type=Path, help="Resume training from a saved PPO checkpoint")
     parser.add_argument("--curriculum", action="store_true", help="Progress from 1 to 2 to 4 obstacles")
+    parser.add_argument("--gamma", type=float, default=0.99, help="PPO discount factor")
     parser.add_argument("--check-env", action="store_true")
     args = parser.parse_args()
     env = ObstacleNavigationAviary(scenario=args.scenario)
@@ -34,7 +35,7 @@ def main() -> None:
     else:
         model = PPO(
             "MlpPolicy", env, verbose=1, seed=args.seed, n_steps=512, batch_size=64,
-            learning_rate=3e-4, gamma=0.99, device="cpu",
+            learning_rate=3e-4, gamma=args.gamma, device="cpu",
         )
     output = args.output or Path(f"autonomous_navigation/models/obstacle_{args.scenario}")
     output.parent.mkdir(parents=True, exist_ok=True)
