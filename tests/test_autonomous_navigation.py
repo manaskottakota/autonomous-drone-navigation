@@ -81,3 +81,18 @@ def test_map_aware_planner_routes_around_fixed_wall():
     np.testing.assert_allclose(route[0], WALL_SCENE["start"])
     np.testing.assert_allclose(route[-1], WALL_SCENE["goal"])
     assert len(route) >= 3, "route should bend around the wall rather than cut through it"
+
+
+def test_obstacle_curriculum_range_and_reachable_seeded_scenes():
+    env = ObstacleNavigationAviary(scenario="random")
+    try:
+        env.set_obstacle_count_range(1, 2)
+        for seed in range(10):
+            env.reset(seed=seed)
+            assert 1 <= len(env.obstacles) <= 2
+            route = astar_route(
+                env.start_position, env.goal, env.obstacles, cruise_z=env.start_position[2]
+            )
+            assert route is not None, f"seed {seed} generated a scene without an A* route"
+    finally:
+        env.close()

@@ -32,15 +32,30 @@ def main() -> None:
             previous = initial.copy()
             path_length, steps = 0.0, 0
             done, info = False, {}
+            distance_history, action_history, step_motion = [], [], []
             while not done:
                 action, _ = model.predict(obs, deterministic=True)
                 obs, _, terminated, truncated, info = env.step(action)
                 position = env.aviary._getDroneStateVector(0)[:3]
+                distance_history.append(float(info["distance"]))
+                action_history.append(np.asarray(action, dtype=float))
+                step_motion.append(float(np.linalg.norm(position - previous)))
                 path_length += float(np.linalg.norm(position - previous))
                 previous = position.copy()
                 steps += 1
                 done = terminated or truncated
             net_displacement = float(np.linalg.norm(previous - initial))
+            if info["is_success"]:
+                failure_category = "success"
+            elif info["collision"]:
+                failure_category = "collision"
+            elif info["crashed"]:
+                failure_category = "out_of_bounds"
+            else:
+                tail = max(1, len(action_history) // 4)
+                tail_action = float(np.mean(np.linalg.norm(action_history[-tail:], axis=1)))
+                tail_motion = float(np.mean(step_motion[-tail:]))
+                failure_category = "timeout_low_motion" if tail_action < 0.2 and tail_motion < 0.01 else "timeout_active_nonconvergence"
             trials.append({
                 "seed": seed,
                 "success": bool(info["is_success"]),
@@ -49,6 +64,8 @@ def main() -> None:
                 "final_distance_m": float(info["distance"]),
                 "time_s": steps * env.dt,
                 "path_efficiency": net_displacement / max(path_length, 1e-8),
+                "failure_category": failure_category,
+                "minimum_goal_distance_m": float(min(distance_history)),
             })
             if (index + 1) % 10 == 0:
                 print(f"Evaluated {index + 1}/{args.episodes}")
@@ -62,6 +79,10 @@ def main() -> None:
             "mean_completion_time_s": float(np.mean([trial["time_s"] for trial in successes])) if successes else None,
             "mean_final_distance_m": float(np.mean([trial["final_distance_m"] for trial in trials])),
             "mean_path_efficiency": float(np.mean([trial["path_efficiency"] for trial in trials])),
+            "failure_categories": {
+                category: sum(trial["failure_category"] == category for trial in trials)
+                for category in sorted({trial["failure_category"] for trial in trials})
+            },
             "trials": trials,
         }
         output = args.output or Path(f"autonomous_navigation/results/obstacle_{args.scenario}_ppo.json")

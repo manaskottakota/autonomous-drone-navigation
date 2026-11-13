@@ -45,6 +45,7 @@ class ObstacleNavigationAviary(gym.Env):
         render_mode: str | None = None,
         scenario: str = "random",
         max_episode_steps: int = 200,
+        obstacle_count_range: tuple[int, int] = (1, 4),
     ):
         super().__init__()
         if render_mode not in (None, "human"):
@@ -54,6 +55,7 @@ class ObstacleNavigationAviary(gym.Env):
         self.render_mode = render_mode
         self.scenario = scenario
         self.max_episode_steps = max_episode_steps
+        self.set_obstacle_count_range(*obstacle_count_range)
         self.control_hz = 48
         self.action_repeat = 4
         self.dt = self.action_repeat / self.control_hz
@@ -96,7 +98,7 @@ class ObstacleNavigationAviary(gym.Env):
             self.np_random.uniform(-0.55, 0.55),
             self.np_random.uniform(0.58, 0.82),
         ])
-        count = int(self.np_random.integers(1, 5))
+        count = int(self.np_random.integers(self.min_obstacles, self.max_obstacles + 1))
         obstacles: list[BoxObstacle] = []
         direction = goal[:2] - start[:2]
         direction /= max(np.linalg.norm(direction), 1e-8)
@@ -120,6 +122,12 @@ class ObstacleNavigationAviary(gym.Env):
                 center[1] -= 0.45
             obstacles.append(BoxObstacle(tuple(center), tuple(half)))
         return start, goal, tuple(obstacles)
+
+    def set_obstacle_count_range(self, minimum: int, maximum: int) -> None:
+        """Set the randomized layout difficulty without changing goal sampling."""
+        if not 1 <= minimum <= maximum <= 4:
+            raise ValueError("obstacle count range must satisfy 1 <= min <= max <= 4")
+        self.min_obstacles, self.max_obstacles = minimum, maximum
 
     def _create_obstacles(self) -> None:
         client = self.aviary.getPyBulletClient()
@@ -291,9 +299,14 @@ class ObstacleNavigationAviary(gym.Env):
             0.2 * max(0.0, 0.5 - goal_ray_m)
             + 0.8 * max(0.0, 0.45 - horizontal_clearance_m)
         )
-        reward = 5.0 * (self.previous_distance - distance) + 1.5 * ray_progress - 0.02 - proximity_penalty
+        goal_capture_progress = max(0.0, 0.5 - self.previous_distance) - max(0.0, 0.5 - distance)
+        reward = (
+            5.0 * (self.previous_distance - distance)
+            + 4.0 * goal_capture_progress
+            + 1.5 * ray_progress - 0.02 - proximity_penalty
+        )
         if success:
-            reward += 8.0
+            reward += 16.0
         if crashed:
             reward -= 25.0
         self.previous_distance = distance
