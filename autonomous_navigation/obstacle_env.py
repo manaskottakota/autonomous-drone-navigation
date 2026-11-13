@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TypeAlias
 
 import gymnasium as gym
 from gymnasium import spaces
@@ -17,6 +18,71 @@ from gym_pybullet_drones.utils.enums import DroneModel, Physics
 class BoxObstacle:
     center: tuple[float, float, float]
     half_extents: tuple[float, float, float]
+
+
+@dataclass(frozen=True)
+class CylinderObstacle:
+    """Vertical cylinder; ``height`` is the full cylinder height."""
+
+    center: tuple[float, float, float]
+    radius: float
+    height: float
+
+    @property
+    def half_extents(self) -> tuple[float, float, float]:
+        return (self.radius, self.radius, self.height / 2.0)
+
+
+@dataclass(frozen=True)
+class SphereObstacle:
+    center: tuple[float, float, float]
+    radius: float
+
+    @property
+    def half_extents(self) -> tuple[float, float, float]:
+        return (self.radius, self.radius, self.radius)
+
+
+@dataclass(frozen=True)
+class GateObstacle:
+    """Two posts and a lintel, leaving a real, LiDAR-visible opening."""
+
+    center: tuple[float, float, float]
+    width: float
+    height: float
+    post_thickness: float = 0.10
+    opening_height: float = 1.15
+
+    @property
+    def half_extents(self) -> tuple[float, float, float]:
+        return (self.post_thickness / 2, self.width / 2, self.height / 2)
+
+
+ObstacleShape: TypeAlias = BoxObstacle | CylinderObstacle | SphereObstacle | GateObstacle
+
+
+def obstacle_parts(obstacle: ObstacleShape) -> tuple[BoxObstacle | CylinderObstacle | SphereObstacle, ...]:
+    """Return physical primitives; compound gates retain their center opening."""
+    if not isinstance(obstacle, GateObstacle):
+        return (obstacle,)
+    x, y, z = obstacle.center
+    side = obstacle.width / 2 - obstacle.post_thickness / 2
+    post_height = obstacle.opening_height
+    lintel_height = max(0.08, obstacle.height - post_height)
+    lintel_z = z - obstacle.height / 2 + post_height + lintel_height / 2
+    return (
+        BoxObstacle((x, y - side, z - obstacle.height / 2 + post_height / 2),
+                    (obstacle.post_thickness / 2, obstacle.post_thickness / 2, post_height / 2)),
+        BoxObstacle((x, y + side, z - obstacle.height / 2 + post_height / 2),
+                    (obstacle.post_thickness / 2, obstacle.post_thickness / 2, post_height / 2)),
+        BoxObstacle((x, y, lintel_z),
+                    (obstacle.post_thickness / 2, obstacle.width / 2, lintel_height / 2)),
+    )
+
+
+def conservative_box(obstacle: ObstacleShape) -> BoxObstacle:
+    """Conservative AABB used by map-aware reachability/planning checks."""
+    return BoxObstacle(obstacle.center, obstacle.half_extents)
 
 
 @dataclass(frozen=True)
@@ -75,10 +141,12 @@ class ObstacleNavigationAviary(gym.Env):
         super().__init__()
         if render_mode not in (None, "human"):
             raise ValueError("render_mode must be None or 'human'")
-        if scenario not in ("wall", "random", "dynamic_wall", "dynamic_random"):
-            raise ValueError("scenario must be wall, random, dynamic_wall, or dynamic_random")
+        if scenario not in ("wall", "random", "complex", "dynamic_wall", "dynamic_random"):
+            raise ValueError("scenario must be wall, random, complex, dynamic_wall, or dynamic_random")
         self.render_mode = render_mode
         self.scenario = scenario
+        if scenario == "complex" and obstacle_count_range == (1, 4):
+            obstacle_count_range = (5, 10)
         self.set_obstacle_count_range(*obstacle_count_range)
         self.set_dynamic_speed_range(0.12, 0.30)
         self.action_history = action_history
@@ -108,7 +176,7 @@ class ObstacleNavigationAviary(gym.Env):
         )
         self.aviary: CtrlAviary | None = None
         self.controller: DSLPIDControl | None = None
-        self.obstacles: tuple[BoxObstacle, ...] = ()
+        self.obstacles: tuple[ObstacleShape, ...] = ()
         self.dynamic_obstacles: tuple[DynamicBoxObstacle, ...] = ()
         self.obstacle_ids: list[int] = []
         self.dynamic_centers: list[np.ndarray] = []
@@ -153,34 +221,64 @@ class ObstacleNavigationAviary(gym.Env):
             self.np_random.uniform(0.58, 0.82),
         ])
         count = int(self.np_random.integers(self.min_obstacles, self.max_obstacles + 1))
-        obstacles: list[BoxObstacle] = []
-        direction = goal[:2] - start[:2]
-        direction /= max(np.linalg.norm(direction), 1e-8)
-        perpendicular = np.array([-direction[1], direction[0]])
-        for index in range(count):
-            if index == 0 or self.np_random.random() < 0.65:
-                fraction = self.np_random.uniform(0.3, 0.7)
-                xy = start[:2] + fraction * (goal[:2] - start[:2])
-                xy += perpendicular * self.np_random.uniform(-0.18, 0.18)
+        obstacles: list[ObstacleShape] = []
+        # Keep a certified outer flight corridor clear (|y| >= 1.4 m) so every
+        # sampled layout is physically traversable even when the direct route
+        # is blocked. Reject overlapping geometry and unsafe start/goal areas.
+        bounds: list[tuple[np.ndarray, np.ndarray]] = []
+        geometry_types = ("box", "cylinder", "sphere", "pillar", "gate")
+        for _ in range(count):
+            for _attempt in range(100):
+                kind = str(self.np_random.choice(geometry_types)) if self.scenario == "complex" else "box"
+                x = float(self.np_random.uniform(-0.48, 0.48))
+                y = float(self.np_random.uniform(-0.92, 0.92))
+                z = float(self.np_random.uniform(0.55, 0.9))
+                if kind == "box":
+                    half = np.array([self.np_random.uniform(0.12, 0.25),
+                                     self.np_random.uniform(0.16, 0.32),
+                                     self.np_random.uniform(0.3, 0.72)])
+                    obstacle: ObstacleShape = BoxObstacle((x, y, z), tuple(half))
+                elif kind == "cylinder":
+                    obstacle = CylinderObstacle((x, y, z), float(self.np_random.uniform(0.14, 0.28)),
+                                                float(self.np_random.uniform(0.65, 1.45)))
+                elif kind == "sphere":
+                    obstacle = SphereObstacle((x, y, z), float(self.np_random.uniform(0.16, 0.30)))
+                elif kind == "pillar":
+                    obstacle = CylinderObstacle((x, y, z), float(self.np_random.uniform(0.07, 0.14)),
+                                                float(self.np_random.uniform(1.0, 1.7)))
+                else:
+                    obstacle = GateObstacle((x, y, z), float(self.np_random.uniform(0.75, 1.15)),
+                                            float(self.np_random.uniform(1.3, 1.8)))
+                box = conservative_box(obstacle)
+                center, half = np.asarray(box.center), np.asarray(box.half_extents)
+                lo, hi = center[:2] - half[:2] - 0.10, center[:2] + half[:2] + 0.10
+                if abs(y) + half[1] > 1.30:
+                    continue
+                if np.linalg.norm(center[:2] - start[:2]) < float(np.linalg.norm(half[:2])) + 0.32:
+                    continue
+                if np.linalg.norm(center[:2] - goal[:2]) < float(np.linalg.norm(half[:2])) + 0.32:
+                    continue
+                if any(np.all(lo < old_hi) and np.all(hi > old_lo) for old_lo, old_hi in bounds):
+                    continue
+                obstacles.append(obstacle)
+                bounds.append((lo, hi))
+                break
             else:
-                xy = self.np_random.uniform([-0.45, -0.8], [0.45, 0.8])
-            half = np.array([
-                self.np_random.uniform(0.12, 0.25),
-                self.np_random.uniform(0.16, 0.36),
-                self.np_random.uniform(0.3, 0.8),
-            ])
-            center = np.array([xy[0], xy[1], self.np_random.uniform(0.45, 0.9)])
-            if np.linalg.norm(center[:2] - start[:2]) < half[0] + 0.3:
-                center[1] += 0.45
-            if np.linalg.norm(center[:2] - goal[:2]) < half[0] + 0.3:
-                center[1] -= 0.45
-            obstacles.append(BoxObstacle(tuple(center), tuple(half)))
+                # Dense layouts fall back to compact non-overlapping pillars;
+                # the outer corridor invariant remains intact.
+                x = -0.42 + 0.11 * len(obstacles)
+                y = 0.0
+                obstacle = CylinderObstacle((x, y, 0.8), 0.07, 1.2)
+                obstacles.append(obstacle)
+                half = np.asarray(obstacle.half_extents)
+                bounds.append((np.array([x, y]) - half[:2] - 0.10,
+                               np.array([x, y]) + half[:2] + 0.10))
         return start, goal, tuple(obstacles)
 
     def set_obstacle_count_range(self, minimum: int, maximum: int) -> None:
         """Set the randomized layout difficulty without changing goal sampling."""
-        if not 1 <= minimum <= maximum <= 4:
-            raise ValueError("obstacle count range must satisfy 1 <= min <= max <= 4")
+        if not 1 <= minimum <= maximum <= 12:
+            raise ValueError("obstacle count range must satisfy 1 <= min <= max <= 12")
         self.min_obstacles, self.max_obstacles = minimum, maximum
 
     def set_dynamic_speed_range(self, minimum_mps: float, maximum_mps: float) -> None:
@@ -201,15 +299,24 @@ class ObstacleNavigationAviary(gym.Env):
         self.dynamic_centers = [np.asarray(obstacle.center, dtype=float) for obstacle in self.dynamic_obstacles]
         self.dynamic_previous_centers = [center.copy() for center in self.dynamic_centers]
         self.dynamic_velocities = [np.asarray(obstacle.velocity, dtype=float) for obstacle in self.dynamic_obstacles]
-        obstacle_specs = [(obstacle, False) for obstacle in self.obstacles]
+        obstacle_specs = [(part, False) for obstacle in self.obstacles for part in obstacle_parts(obstacle)]
+        self.static_primitive_count = len(obstacle_specs)
         obstacle_specs += [(BoxObstacle(item.center, item.half_extents), True) for item in self.dynamic_obstacles]
         for obstacle, is_dynamic in obstacle_specs:
-            shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=obstacle.half_extents, physicsClientId=client)
-            visual = p.createVisualShape(
-                p.GEOM_BOX, halfExtents=obstacle.half_extents,
-                rgbaColor=(0.92, 0.48, 0.08, 1) if is_dynamic else (0.85, 0.18, 0.12, 1),
-                physicsClientId=client,
-            )
+            color = (0.92, 0.48, 0.08, 1) if is_dynamic else (0.85, 0.18, 0.12, 1)
+            if isinstance(obstacle, CylinderObstacle):
+                shape = p.createCollisionShape(p.GEOM_CYLINDER, radius=obstacle.radius,
+                                               height=obstacle.height, physicsClientId=client)
+                visual = p.createVisualShape(p.GEOM_CYLINDER, radius=obstacle.radius,
+                                             length=obstacle.height, rgbaColor=color, physicsClientId=client)
+            elif isinstance(obstacle, SphereObstacle):
+                shape = p.createCollisionShape(p.GEOM_SPHERE, radius=obstacle.radius, physicsClientId=client)
+                visual = p.createVisualShape(p.GEOM_SPHERE, radius=obstacle.radius,
+                                             rgbaColor=color, physicsClientId=client)
+            else:
+                shape = p.createCollisionShape(p.GEOM_BOX, halfExtents=obstacle.half_extents, physicsClientId=client)
+                visual = p.createVisualShape(p.GEOM_BOX, halfExtents=obstacle.half_extents,
+                                             rgbaColor=color, physicsClientId=client)
             body = p.createMultiBody(
                 baseMass=0, baseCollisionShapeIndex=shape, baseVisualShapeIndex=visual,
                 basePosition=obstacle.center, physicsClientId=client,
@@ -238,7 +345,7 @@ class ObstacleNavigationAviary(gym.Env):
                     proposed[axis] = np.clip(proposed[axis], lower[axis], upper[axis])
                     velocity[axis] *= -1.0
             self.dynamic_centers[index] = proposed
-            body_id = self.obstacle_ids[len(self.obstacles) + index]
+            body_id = self.obstacle_ids[self.static_primitive_count + index]
             p.resetBasePositionAndOrientation(body_id, proposed.tolist(), [0, 0, 0, 1], physicsClientId=client)
 
     def _dynamic_scenario(self, start: np.ndarray, goal: np.ndarray, obstacles: tuple[BoxObstacle, ...]):
@@ -356,8 +463,8 @@ class ObstacleNavigationAviary(gym.Env):
         """Catch brief contacts that resolve between PyBullet control frames."""
         padding = 0.08  # approximate horizontal/vertical collision radius of the Crazyflie
         direction = end - start
-        specs = [(obstacle, np.asarray(obstacle.center), np.asarray(obstacle.center))
-                 for obstacle in self.obstacles]
+        specs = [(part, np.asarray(part.center), np.asarray(part.center))
+                 for obstacle in self.obstacles for part in obstacle_parts(obstacle)]
         for index, obstacle in enumerate(self.dynamic_obstacles):
             current = self.dynamic_centers[index]
             prior = self.dynamic_previous_centers[index]
@@ -409,8 +516,9 @@ class ObstacleNavigationAviary(gym.Env):
                 obstacles, dynamic_obstacles = self._dynamic_scenario(start, goal, obstacles)
         if start.shape != (3,) or goal.shape != (3,):
             raise ValueError("start and goal must each contain three coordinates")
-        if any(not isinstance(obstacle, BoxObstacle) for obstacle in obstacles):
-            raise TypeError("obstacles must be BoxObstacle instances")
+        if any(not isinstance(obstacle, (BoxObstacle, CylinderObstacle, SphereObstacle, GateObstacle))
+               for obstacle in obstacles):
+            raise TypeError("obstacles must use a supported obstacle geometry")
         if any(not isinstance(obstacle, DynamicBoxObstacle) for obstacle in dynamic_obstacles):
             raise TypeError("dynamic_obstacles must be DynamicBoxObstacle instances")
         self.start_position, self.goal, self.obstacles = start.copy(), goal.copy(), tuple(obstacles)

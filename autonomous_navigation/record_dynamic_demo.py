@@ -69,12 +69,13 @@ def _capture(env: ObstacleNavigationAviary, width: int, height: int) -> np.ndarr
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="autonomous_navigation/models/dynamic_transfer_baseline_seed43.zip")
-    parser.add_argument("--scenario", choices=("dynamic_wall", "dynamic_random"), default="dynamic_wall")
+    parser.add_argument("--scenario", choices=("dynamic_wall", "dynamic_random", "complex"), default="dynamic_wall")
     parser.add_argument("--seed", type=int, default=86000)
     parser.add_argument("--output", type=Path, default=Path("autonomous_navigation/results/dynamic_wall_demo.mp4"))
     parser.add_argument("--action-history", action="store_true")
     parser.add_argument("--speed-limit", type=float, default=0.90)
     parser.add_argument("--policy-hz", type=int, choices=(12, 24, 48), default=12)
+    parser.add_argument("--obstacles", type=int, default=8, help="Complex-scene obstacle count (1-12)")
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=540)
     args = parser.parse_args()
@@ -86,6 +87,10 @@ def main() -> None:
         scenario=args.scenario, dynamic_observation=True, action_history=args.action_history,
         policy_hz=args.policy_hz, max_speed=args.speed_limit,
     )
+    if args.scenario == "complex":
+        if not 1 <= args.obstacles <= 12:
+            parser.error("--obstacles must be between 1 and 12")
+        env.set_obstacle_count_range(args.obstacles, args.obstacles)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     frame_count = 0
     path_length = 0.0

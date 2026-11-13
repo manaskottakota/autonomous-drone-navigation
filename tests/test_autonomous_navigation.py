@@ -3,7 +3,9 @@ import numpy as np
 
 from autonomous_navigation.env import PointToPointAviary
 from autonomous_navigation.env import sample_scenario
-from autonomous_navigation.obstacle_env import BoxObstacle, ObstacleNavigationAviary
+from autonomous_navigation.obstacle_env import (
+    BoxObstacle, CylinderObstacle, GateObstacle, ObstacleNavigationAviary, SphereObstacle,
+)
 from autonomous_navigation.obstacle_env import WALL_SCENE
 from autonomous_navigation.planning import astar_route
 from autonomous_navigation.train_obstacle import transfer_policy_state
@@ -266,5 +268,58 @@ def test_dynamic_random_samples_crossing_head_on_and_seeded_velocities():
         env.reset(seed=101)
         assert env.dynamic_obstacles == first
         assert 0.25 <= np.linalg.norm(env.dynamic_obstacles[0].velocity[:2]) <= 0.35
+    finally:
+        env.close()
+
+
+def test_mixed_obstacle_geometries_create_lidar_hits_and_gate_opening():
+    env = ObstacleNavigationAviary(scenario="complex", max_episode_steps=2)
+    try:
+        obstacles = (
+            CylinderObstacle((0.0, -0.7, 0.7), 0.22, 1.2),
+            SphereObstacle((0.0, -0.35, 0.7), 0.24),
+            GateObstacle((0.0, 0.7, 0.9), 0.9, 1.8),
+        )
+        obs, _ = env.reset(seed=21, options={
+            "start": [-1.1, 0.0, 0.7], "goal": [1.1, 0.0, 0.7], "obstacles": obstacles,
+        })
+        assert env.observation_space.contains(obs)
+        # Cylinder/sphere surfaces and gate bars are actual collision shapes
+        # used by the same PyBullet batched ray sensor as policy observations.
+        assert len(env.obstacle_ids) == 5
+        assert np.any(obs[6:] < 0.95)
+        # Gate has a clear center aperture; direct ray at y=0 does not hit its lintel/posts.
+        assert env.last_ranges[env.AZIMUTH_RAYS] > 0.95
+    finally:
+        env.close()
+
+
+def test_complex_scenes_are_seeded_nonoverlapping_and_reachable():
+    env = ObstacleNavigationAviary(scenario="complex")
+    try:
+        for seed in (4, 12, 29, 61):
+            env.reset(seed=seed)
+            assert 5 <= len(env.obstacles) <= 10
+            sampled = env.obstacles
+            assert {type(obstacle) for obstacle in env.obstacles} <= {
+                BoxObstacle, CylinderObstacle, SphereObstacle, GateObstacle,
+            }
+            route = astar_route(env.start_position, env.goal, env.obstacles,
+                                cruise_z=env.start_position[2])
+            assert route is not None, f"complex scene seed {seed} is not reachable"
+            env.reset(seed=seed)
+            assert env.obstacles == sampled
+    finally:
+        env.close()
+
+
+def test_cylinder_and_sphere_contact_are_detected_by_swept_collision():
+    env = ObstacleNavigationAviary(scenario="complex")
+    try:
+        for obstacle in (CylinderObstacle((0, 0, 0.7), 0.2, 1.0),
+                         SphereObstacle((0, 0, 0.7), 0.2)):
+            env.obstacles = (obstacle,)
+            assert env._swept_collision(np.array([-0.4, 0.0, 0.7]),
+                                        np.array([0.4, 0.0, 0.7]))
     finally:
         env.close()

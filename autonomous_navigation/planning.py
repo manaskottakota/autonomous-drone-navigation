@@ -5,13 +5,13 @@ import heapq
 
 import numpy as np
 
-from autonomous_navigation.obstacle_env import BoxObstacle
+from autonomous_navigation.obstacle_env import ObstacleShape, obstacle_parts
 
 
 def astar_route(
     start: np.ndarray,
     goal: np.ndarray,
-    obstacles: tuple[BoxObstacle, ...],
+    obstacles: tuple[ObstacleShape, ...],
     cruise_z: float,
     resolution: float = 0.1,
     padding: float = 0.32,
@@ -23,7 +23,7 @@ def astar_route(
         return np.array([lower + node[0] * resolution, lower + node[1] * resolution, cruise_z])
 
     def blocked(a: np.ndarray, b: np.ndarray, margin: float = padding) -> bool:
-        for obstacle in obstacles:
+        for obstacle in (part for item in obstacles for part in obstacle_parts(item)):
             center = np.asarray(obstacle.center)
             half = np.asarray(obstacle.half_extents)
             if not (center[2] - half[2] - margin <= cruise_z <= center[2] + half[2] + margin):

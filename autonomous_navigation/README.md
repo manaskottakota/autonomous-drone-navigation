@@ -240,6 +240,43 @@ PPO/live-map A* evaluation with:
   --action-history --policy-hz 12 --speed-limit 0.90 --episodes 100 --seed 84000
 ```
 
+## Complex multi-obstacle courses (Milestone 6, static geometry stage)
+
+The `complex` scenario extends the existing 72-ray/PID environment with 5–10
+randomized static obstacles. Geometry includes boxes/walls, vertical cylinders
+and thin pillars, spheres, and gates built from three independent PyBullet
+primitives so their opening is real and visible to LiDAR. PyBullet supplies the
+ray intersections and rigid-body contacts; swept collision checks use
+conservative primitive bounds. Random layouts keep obstacle extents separated
+and reserve an outer flight corridor, while a map-aware A* audit checks that
+each generated scene has a route. The policy still sees only relative goal,
+velocity, and LiDAR (plus optional action history); no obstacle map is added.
+
+First test the new scene and its reachability, then fine-tune the preserved
+high-speed PPO checkpoint through a 1-to-10-obstacle curriculum:
+
+```sh
+./.venv/bin/python -m autonomous_navigation.train_obstacle \
+  --scenario complex --complex-curriculum --action-history \
+  --resume autonomous_navigation/models/obstacle_speed_curriculum_seed43.zip \
+  --gamma 0.995 --learning-rate 0.00003 --timesteps 300000 --seed 61201 \
+  --output autonomous_navigation/models/complex_curriculum_seed61201
+./.venv/bin/python -m autonomous_navigation.evaluate_obstacle \
+  autonomous_navigation/models/complex_curriculum_seed61201.zip \
+  --scenario complex --action-history --policy-hz 12 --speed-limit 0.90 \
+  --episodes 200 --seed 206000
+```
+
+For a visual course, use `obstacle_demo --scenario complex --obstacles 10` with
+the saved model. The current checkpoint predates this geometry distribution;
+the 20-scene seed-205000 smoke benchmark before complex training was only 55%
+successful, with 15% collisions and 30% active timeouts. Treat this as an
+initial generalization baseline, not a final performance claim. In the initial
+generator audit, all 200 seeds 200000–200199 had A* routes; the layouts
+contained 5–10 objects and all four geometry types appeared. This stage adds
+static multi-shape courses; generalizing the dynamic motion model over these
+geometry types remains a later Milestone 6 substage.
+
 For the moving-wall visualization, launch an interactive macOS Terminal, then
 run:
 

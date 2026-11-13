@@ -15,7 +15,7 @@ from autonomous_navigation.obstacle_env import ObstacleNavigationAviary
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("model", help="PPO model path")
-    parser.add_argument("--scenario", choices=("wall", "random", "dynamic_wall", "dynamic_random"), default="wall")
+    parser.add_argument("--scenario", choices=("wall", "random", "complex", "dynamic_wall", "dynamic_random"), default="wall")
     parser.add_argument("--episodes", type=int, default=100)
     parser.add_argument("--seed", type=int, default=10000)
     parser.add_argument("--output", type=Path)
@@ -23,6 +23,7 @@ def main() -> None:
     parser.add_argument("--dynamic-observation", action="store_true", help="Use model trained with sensor-only LiDAR history")
     parser.add_argument("--policy-hz", type=int, choices=(12, 24, 48), default=12)
     parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
+    parser.add_argument("--max-obstacles", type=int, help="Maximum randomized obstacles (1-12); complex defaults to 10")
     parser.add_argument("--obstacle-speed-min", type=float, default=0.12, help="Minimum randomized dynamic obstacle speed in m/s")
     parser.add_argument("--obstacle-speed-max", type=float, default=0.30, help="Maximum randomized dynamic obstacle speed in m/s")
     args = parser.parse_args()
@@ -32,6 +33,10 @@ def main() -> None:
     env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history,
                                    dynamic_observation=args.dynamic_observation, policy_hz=args.policy_hz,
                                    max_speed=args.speed_limit)
+    if args.max_obstacles is not None:
+        if not 1 <= args.max_obstacles <= 12:
+            parser.error("--max-obstacles must be between 1 and 12")
+        env.set_obstacle_count_range(1, args.max_obstacles)
     env.set_dynamic_speed_range(args.obstacle_speed_min, args.obstacle_speed_max)
     trials = []
     try:
@@ -86,6 +91,8 @@ def main() -> None:
                 "failure_category": failure_category,
                 "minimum_goal_distance_m": float(min(distance_history)),
                 "first_range_rate_alert_s": sensor_alert_time,
+                "obstacle_count": len(env.obstacles) + len(env.dynamic_obstacles),
+                "geometry_types": sorted({type(item).__name__ for item in env.obstacles}),
                 "policy_inference_median_ms": float(np.median(latencies) * 1000.0),
                 "policy_inference_p95_ms": float(np.percentile(latencies, 95) * 1000.0),
             })
@@ -112,6 +119,22 @@ def main() -> None:
             "failure_categories": {
                 category: sum(trial["failure_category"] == category for trial in trials)
                 for category in sorted({trial["failure_category"] for trial in trials})
+            },
+            "by_obstacle_count": {
+                str(count): {
+                    "episodes": sum(t["obstacle_count"] == count for t in trials),
+                    "success_rate": float(np.mean([t["success"] for t in trials if t["obstacle_count"] == count])),
+                    "collision_rate": float(np.mean([t["collision"] for t in trials if t["obstacle_count"] == count])),
+                }
+                for count in sorted({t["obstacle_count"] for t in trials})
+            },
+            "by_geometry": {
+                geometry: {
+                    "episodes": sum(geometry in t["geometry_types"] for t in trials),
+                    "success_rate": float(np.mean([t["success"] for t in trials if geometry in t["geometry_types"]])),
+                    "collision_rate": float(np.mean([t["collision"] for t in trials if geometry in t["geometry_types"]])),
+                }
+                for geometry in sorted({g for t in trials for g in t["geometry_types"]})
             },
             "trials": trials,
         }

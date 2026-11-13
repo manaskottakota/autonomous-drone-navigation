@@ -33,7 +33,7 @@ def transfer_policy_state(target_state: dict, source_state: dict) -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--scenario", choices=("wall", "random", "dynamic_wall", "dynamic_random"), default="wall")
+    parser.add_argument("--scenario", choices=("wall", "random", "complex", "dynamic_wall", "dynamic_random"), default="wall")
     parser.add_argument("--timesteps", type=int, default=100_000)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--output", type=Path)
@@ -41,6 +41,8 @@ def main() -> None:
     parser.add_argument("--transfer-from", type=Path, help="Initialize from a compatible static policy; added LiDAR-history input weights start at zero")
     parser.add_argument("--transfer-only", action="store_true", help="Save the transferred policy without training")
     parser.add_argument("--curriculum", action="store_true", help="Progress from 1 to 2 to 4 obstacles")
+    parser.add_argument("--complex-curriculum", action="store_true",
+                        help="Progress from 1 to 10 mixed-geometry static obstacles")
     parser.add_argument("--gamma", type=float, default=0.99, help="PPO discount factor")
     parser.add_argument("--learning-rate", type=float, default=3e-4, help="PPO learning rate; set lower when fine-tuning a transferred policy")
     parser.add_argument("--action-history", action="store_true", help="Include previous command and sensor-derived progress")
@@ -48,6 +50,7 @@ def main() -> None:
     parser.add_argument("--policy-hz", type=int, choices=(12, 24, 48), default=12, help="PPO decision frequency; PID remains 48 Hz and physics 240 Hz")
     parser.add_argument("--dynamic-curriculum", action="store_true", help="Train from one slow crossing obstacle to randomized mixed dynamic layouts")
     parser.add_argument("--speed-limit", type=float, default=0.45, help="Horizontal command speed limit in m/s")
+    parser.add_argument("--max-obstacles", type=int, help="Maximum randomized obstacles (1-12); complex defaults to 10")
     parser.add_argument("--speed-curriculum", action="store_true", help="Increase speed from 0.45 to 0.90 m/s while increasing obstacle count")
     parser.add_argument("--check-env", action="store_true")
     args = parser.parse_args()
@@ -55,9 +58,15 @@ def main() -> None:
         parser.error("--resume and --transfer-from are mutually exclusive")
     if args.transfer_only and not args.transfer_from:
         parser.error("--transfer-only requires --transfer-from")
+    if args.complex_curriculum and args.scenario != "complex":
+        parser.error("--complex-curriculum requires --scenario complex")
     env = ObstacleNavigationAviary(scenario=args.scenario, action_history=args.action_history,
                                    dynamic_observation=args.dynamic_observation, policy_hz=args.policy_hz,
                                    max_speed=args.speed_limit)
+    if args.max_obstacles is not None:
+        if not 1 <= args.max_obstacles <= 12:
+            parser.error("--max-obstacles must be between 1 and 12")
+        env.set_obstacle_count_range(1, args.max_obstacles)
     if args.check_env:
         check_env(env, warn=True)
         print("Obstacle environment API check passed")
@@ -95,7 +104,19 @@ def main() -> None:
         env.close()
         print(f"Saved transferred policy to {output}.zip")
         return
-    if args.speed_curriculum and args.scenario == "random":
+    if args.complex_curriculum:
+        phases = ((1, 0.10), (2, 0.15), (4, 0.20), (6, 0.20), (8, 0.20), (10, 0.15))
+        completed = 0
+        for phase, (max_obstacles, fraction) in enumerate(phases, start=1):
+            phase_steps = args.timesteps - completed if phase == len(phases) else round(args.timesteps * fraction)
+            if phase_steps <= 0:
+                continue
+            base_env.set_obstacle_count_range(1, max_obstacles)
+            print(f"Complex geometry curriculum phase {phase}: 1-{max_obstacles} obstacles, {phase_steps} steps")
+            model.learn(total_timesteps=phase_steps, reset_num_timesteps=args.resume is None and completed == 0)
+            completed += phase_steps
+            model.save(f"{output}_complex_stage_{phase}")
+    elif args.speed_curriculum and args.scenario == "random":
         phases = ((0.45, 1, 0.20), (0.60, 2, 0.20), (0.75, 3, 0.30), (0.90, 4, 0.30))
         completed = 0
         for phase, (speed, max_obstacles, fraction) in enumerate(phases, start=1):
