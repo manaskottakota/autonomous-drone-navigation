@@ -179,14 +179,17 @@ class ObstacleNavigationAviary(gym.Env):
             for i, ((origin, endpoint), result) in enumerate(zip(zip(origins, endpoints), results)):
                 hit = result[3] if result[0] >= 0 else endpoint
                 color = (1, 0.2, 0.1) if result[0] >= 0 else (0.2, 0.7, 1)
-                old_id = self.debug_ray_ids[i] if i < len(self.debug_ray_ids) else -1
+                old_id = self.debug_ray_ids[i] if i < len(self.debug_ray_ids) else None
                 # Keep debug items alive while the simulation runs so their
                 # IDs remain valid when PyBullet replaces them on the next
                 # control step. A short lifetime makes replaceItemUniqueId
                 # fail once the item expires (notably in the macOS GUI build).
+                debug_args = {}
+                if old_id is not None:
+                    debug_args["replaceItemUniqueId"] = old_id
                 debug_id = p.addUserDebugLine(origin, hit, color, lineWidth=1,
-                                              lifeTime=0, replaceItemUniqueId=old_id,
-                                              physicsClientId=client)
+                                              lifeTime=0, physicsClientId=client,
+                                              **debug_args)
                 if i >= len(self.debug_ray_ids):
                     self.debug_ray_ids.append(debug_id)
                 else:
