@@ -63,7 +63,7 @@ class ObstacleNavigationAviary(gym.Env):
         self,
         render_mode: str | None = None,
         scenario: str = "random",
-        max_episode_steps: int = 200,
+        max_episode_steps: int | None = None,
         obstacle_count_range: tuple[int, int] = (1, 4),
         action_history: bool = False,
         max_speed: float = 0.45,
@@ -79,7 +79,6 @@ class ObstacleNavigationAviary(gym.Env):
             raise ValueError("scenario must be wall, random, dynamic_wall, or dynamic_random")
         self.render_mode = render_mode
         self.scenario = scenario
-        self.max_episode_steps = max_episode_steps
         self.set_obstacle_count_range(*obstacle_count_range)
         self.set_dynamic_speed_range(0.12, 0.30)
         self.action_history = action_history
@@ -92,6 +91,11 @@ class ObstacleNavigationAviary(gym.Env):
         self.policy_hz = int(policy_hz)
         self.action_repeat = self.control_hz // self.policy_hz
         self.dt = self.action_repeat / self.control_hz
+        # Keep the default simulated episode duration fixed at 16.67 s when
+        # policy frequency changes; explicit step caps remain exact.
+        self.max_episode_steps = int(round(200 * self.policy_hz / 12)) if max_episode_steps is None else max_episode_steps
+        if self.max_episode_steps <= 0:
+            raise ValueError("max_episode_steps must be positive")
         self.set_speed_limit(max_speed)
         self.success_radius = 0.18
         self.action_space = spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)

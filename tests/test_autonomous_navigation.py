@@ -209,6 +209,8 @@ def test_policy_frequency_keeps_pid_rate_and_scales_policy_dt():
         assert env.control_hz == 48
         assert env.action_repeat == 2
         assert env.dt == 1 / 24
+        assert env.max_episode_steps == 400
+        assert np.isclose(env.max_episode_steps * env.dt, 200 / 12)
     finally:
         env.close()
 
