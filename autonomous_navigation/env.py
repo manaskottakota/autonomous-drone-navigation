@@ -4,10 +4,27 @@ from __future__ import annotations
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
+from gymnasium.utils import seeding
 
 from gym_pybullet_drones.control.DSLPIDControl import DSLPIDControl
 from gym_pybullet_drones.envs.CtrlAviary import CtrlAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
+
+
+def sample_scenario(seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """Generate a start/goal pair with the same seeded distribution as reset()."""
+    rng, _ = seeding.np_random(seed)
+    return _sample_scenario(rng)
+
+
+def _sample_scenario(rng: np.random.Generator) -> tuple[np.ndarray, np.ndarray]:
+    start = np.array([rng.uniform(-0.5, 0.5), rng.uniform(-0.5, 0.5), rng.uniform(0.5, 0.8)])
+    offset = rng.uniform(-0.8, 0.8, size=3)
+    if np.linalg.norm(offset) < 0.4:
+        offset[0] += 0.5
+    goal = start + offset
+    goal[2] = np.clip(goal[2], 0.45, 1.2)
+    return start, goal
 
 
 class PointToPointAviary(gym.Env):
@@ -56,12 +73,7 @@ class PointToPointAviary(gym.Env):
             start = np.asarray(options["start"], dtype=float)
             self.goal = np.asarray(options["goal"], dtype=float)
         else:
-            start = np.array([self.np_random.uniform(-0.5, 0.5), self.np_random.uniform(-0.5, 0.5), self.np_random.uniform(0.5, 0.8)])
-            offset = self.np_random.uniform(-0.8, 0.8, size=3)
-            if np.linalg.norm(offset) < 0.4:
-                offset[0] += 0.5
-            self.goal = start + offset
-            self.goal[2] = np.clip(self.goal[2], 0.45, 1.2)
+            start, self.goal = _sample_scenario(self.np_random)
         if start.shape != (3,) or self.goal.shape != (3,):
             raise ValueError("start and goal must each contain three coordinates")
         self.start_position = start.copy()

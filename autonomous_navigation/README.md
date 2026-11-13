@@ -36,6 +36,19 @@ volume.
 ./.venv/bin/python -m autonomous_navigation.evaluate autonomous_navigation/models/goal_ppo.zip --episodes 100 --seed 1000
 ```
 
+For a paired comparison on the same randomized scenarios, with new seeds:
+
+```sh
+./.venv/bin/python -m autonomous_navigation.compare --episodes 100 --seed 2000
+```
+
+The comparison writes `autonomous_navigation/results/ppo_vs_pid.json` and
+reports success and crash rates, success time, final distance, and path
+efficiency for each controller. Path efficiency is net displacement divided
+by distance traveled. It saves per-seed outcomes and paired bootstrap 95%
+confidence intervals for time and path-efficiency differences. Both use a 0.15 m
+success radius.
+
 Models default to `autonomous_navigation/models/goal_ppo.zip`. Simulation
 outputs and generated model artifacts are not source files; preserve the
 training seed, timestep count, and evaluation command with each reported run.

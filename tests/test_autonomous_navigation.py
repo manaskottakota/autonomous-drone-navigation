@@ -2,6 +2,7 @@
 import numpy as np
 
 from autonomous_navigation.env import PointToPointAviary
+from autonomous_navigation.env import sample_scenario
 
 
 def test_reset_observation_and_seeded_scenario():
@@ -9,6 +10,9 @@ def test_reset_observation_and_seeded_scenario():
     try:
         obs, info = env.reset(seed=31)
         first_start, first_goal = env.start_position.copy(), env.goal.copy()
+        sampled_start, sampled_goal = sample_scenario(31)
+        np.testing.assert_allclose(first_start, sampled_start)
+        np.testing.assert_allclose(first_goal, sampled_goal)
         assert env.observation_space.contains(obs)
         assert np.isfinite(info["distance"])
         obs, _ = env.reset(seed=31)

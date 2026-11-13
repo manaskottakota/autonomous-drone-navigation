@@ -11,6 +11,7 @@ tmp/
 experiments/learning/results/save-*
 autonomous_navigation/models/*.zip
 autonomous_navigation/models/*.log
+autonomous_navigation/results/
 
 # Betaflight
 betaflight_sitl/
