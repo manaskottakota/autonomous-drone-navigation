@@ -148,3 +148,15 @@ def test_speed_limit_rejects_unsafe_or_nonfinite_values():
             pass
         else:
             raise AssertionError(f"invalid speed limit {invalid} was accepted")
+    env.close()
+
+
+def test_obstacle_clearance_margin_grows_with_flight_speed():
+    env = ObstacleNavigationAviary(scenario="wall")
+    try:
+        slow_penalty = env._speed_adaptive_clearance_penalty(clearance_m=0.5, horizontal_speed_mps=0.4)
+        fast_penalty = env._speed_adaptive_clearance_penalty(clearance_m=0.5, horizontal_speed_mps=0.9)
+        assert slow_penalty == 0.0
+        assert fast_penalty > slow_penalty
+    finally:
+        env.close()

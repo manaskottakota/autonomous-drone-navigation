@@ -82,6 +82,8 @@ class ObstacleNavigationAviary(gym.Env):
         self.position_target = np.zeros(3)
         self.previous_distance = 0.0
         self.previous_goal_ray_m = self.LIDAR_RANGE
+        self.safe_deceleration = 0.65
+        self.action_smoothness_weight = 0.05
         self.steps = 0
         self.last_ranges = np.ones(self.LIDAR_RAYS, dtype=np.float32)
         self.debug_ray_ids: list[int] = []
@@ -228,6 +230,12 @@ class ObstacleNavigationAviary(gym.Env):
         ray_index = int(np.round(relative_bearing * self.AZIMUTH_RAYS / (2 * np.pi))) % self.AZIMUTH_RAYS
         return float(ranges[self.AZIMUTH_RAYS + ray_index] * self.LIDAR_RANGE)
 
+    def _speed_adaptive_clearance_penalty(self, clearance_m: float, horizontal_speed_mps: float) -> float:
+        """Penalize entering the measured stopping envelope around obstacles."""
+        stopping_distance = horizontal_speed_mps**2 / (2.0 * self.safe_deceleration)
+        safe_clearance = max(0.45, 0.15 + stopping_distance)
+        return 0.8 * max(0.0, safe_clearance - clearance_m)
+
     def _collided(self) -> bool:
         client = self.aviary.getPyBulletClient()
         drone_id = int(self.aviary.DRONE_IDS[0])
@@ -337,15 +345,17 @@ class ObstacleNavigationAviary(gym.Env):
         # dense feedback to sidestep a wall and reveal a clear passage.
         ray_progress = np.clip(goal_ray_m, 0.0, 1.5) - np.clip(self.previous_goal_ray_m, 0.0, 1.5)
         horizontal_clearance_m = float(np.min(ranges[self.AZIMUTH_RAYS:2 * self.AZIMUTH_RAYS]) * self.LIDAR_RANGE)
+        horizontal_speed = float(np.linalg.norm(state[10:12]))
         proximity_penalty = (
             0.2 * max(0.0, 0.5 - goal_ray_m)
-            + 0.8 * max(0.0, 0.45 - horizontal_clearance_m)
+            + self._speed_adaptive_clearance_penalty(horizontal_clearance_m, horizontal_speed)
         )
+        command_change_penalty = self.action_smoothness_weight * float(np.sum((command - self.last_action) ** 2))
         goal_capture_progress = max(0.0, 0.5 - self.previous_distance) - max(0.0, 0.5 - distance)
         reward = (
             5.0 * (self.previous_distance - distance)
             + 4.0 * goal_capture_progress
-            + 1.5 * ray_progress - 0.02 - proximity_penalty
+            + 1.5 * ray_progress - 0.02 - proximity_penalty - command_change_penalty
         )
         if success:
             reward += 16.0
